@@ -94,31 +94,55 @@ router.get('/my', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET: All Attendance (Admin View) with Notes
+// ✅ GET: All Attendance (Admin View) with Filters + Notes
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const records = await Attendance.find()
-      .sort({ createdAt: -1 })
-      .populate('user', 'name email employeeId');
+    const { role, project, month, year } = req.query;
 
-    // pull notes in one go
+    // Date filter
+    const monthNum = parseInt(month) || new Date().getMonth() + 1;
+    const yearNum = parseInt(year) || new Date().getFullYear();
+
+    const startDate = new Date(yearNum, monthNum - 1, 1);
+    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
+
+    // Build user filter
+    const userQuery = {};
+    if (role) userQuery.role = role.toLowerCase();
+    if (project && mongoose.Types.ObjectId.isValid(project)) {
+      userQuery.project = new mongoose.Types.ObjectId(project);
+    }
+
+    // Find all users (respect role/project filter)
+    const users = await User.find(userQuery).lean();
+
+    // Find attendance records for those users within the month
+    const userIds = users.map((u) => u._id);
+    const records = await Attendance.find({
+      user: { $in: userIds },
+      createdAt: { $gte: startDate, $lte: endDate },
+    })
+      .sort({ createdAt: -1 })
+      .populate('user', 'name role email employeeId project');
+
+    // ✅ Enrich with notes
     const AttendanceNote = (await import('../models/AttendanceNote.js')).default;
-    const keys = records.map(r => ({
+    const keys = records.map((r) => ({
       user: r.user?._id,
-      date: new Date(r.createdAt).toISOString().split('T')[0]
+      date: new Date(r.createdAt).toISOString().split('T')[0],
     }));
 
     const notes = await AttendanceNote.find({
-      $or: keys.map(k => ({ userId: k.user, date: k.date }))
+      $or: keys.map((k) => ({ userId: k.user, date: k.date })),
     }).lean();
 
-    const notesMap = new Map(notes.map(n => [`${n.userId}_${n.date}`, n.note]));
+    const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
 
-    const enriched = records.map(r => {
+    const enriched = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split('T')[0];
       return {
         ...r.toObject(),
-        note: notesMap.get(`${r.user?._id}_${dateKey}`) || ''
+        note: notesMap.get(`${r.user?._id}_${dateKey}`) || '',
       };
     });
 
@@ -128,6 +152,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
+
 
 
 
