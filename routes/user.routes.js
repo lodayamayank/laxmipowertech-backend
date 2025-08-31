@@ -13,15 +13,18 @@ router.get('/roles', (req, res) => {
 });
 
 // ✅ Register a user (with password hashing + default fallback)
-// ✅ Register a user (with password hashing & default fallback)
 router.post('/register', authMiddleware, async (req, res) => {
   try {
     let { password, ...rest } = req.body;
 
-    // ✅ if no password provided → use default123
+    console.log("👉 Incoming password:", password);
+
+    // force default if blank/undefined
     const rawPassword = password && password.trim()
       ? password.trim()
       : "default123";
+
+    console.log("👉 Raw password used:", rawPassword);
 
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
@@ -31,16 +34,13 @@ router.post('/register', authMiddleware, async (req, res) => {
     });
 
     await newUser.save();
-
-    const populatedUser = await User.findById(newUser._id)
-      .populate('project', 'name')
-      .populate('assignedBranches', 'name radius lat lng address');
-
-    res.status(201).json(populatedUser);
+    res.status(201).json(newUser);
   } catch (err) {
+    console.error("❌ Register failed:", err);
     res.status(400).json({ message: 'Failed to register user', error: err.message });
   }
 });
+
 
 
 // ✅ Get current user profile
