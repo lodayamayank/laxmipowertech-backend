@@ -7,9 +7,10 @@ const router = express.Router();
 // Create a new project
 router.post('/', authMiddleware, async (req, res) => {
   try {
-    const project = new Project(req.body);
+    const { name, address, branches } = req.body;
+    const project = new Project({ name, address, branches });
     await project.save();
-    res.status(201).json(project);
+    res.status(201).json(await project.populate('branches', 'name address'));
   } catch (err) {
     res.status(400).json({ message: 'Failed to create project', error: err.message });
   }
@@ -18,7 +19,9 @@ router.post('/', authMiddleware, async (req, res) => {
 // Get all projects
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const projects = await Project.find().sort({ createdAt: -1 });
+    const projects = await Project.find()
+      .sort({ createdAt: -1 })
+      .populate('branches', 'name address');
     res.json(projects);
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch projects', error: err.message });
@@ -28,7 +31,12 @@ router.get('/', authMiddleware, async (req, res) => {
 // Update a project
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
-    const project = await Project.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    const { name, address, branches } = req.body;
+    const project = await Project.findByIdAndUpdate(
+      req.params.id,
+      { name, address, branches },
+      { new: true }
+    ).populate('branches', 'name address');
     res.json(project);
   } catch (err) {
     res.status(400).json({ message: 'Failed to update project', error: err.message });
