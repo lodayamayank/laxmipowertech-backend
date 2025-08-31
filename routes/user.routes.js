@@ -135,5 +135,36 @@ router.delete('/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to delete user', error: err.message });
   }
 });
+// ✅ Admin Reset Password (force default123)
+router.post('/reset-password/:username', authMiddleware, async (req, res) => {
+  try {
+    // Only admins can reset
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: "Access denied. Admins only." });
+    }
+
+    const { username } = req.params;
+    const rawPassword = "default123";
+    const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
+    const updatedUser = await User.findOneAndUpdate(
+      { username },
+      { password: hashedPassword },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json({
+      message: `Password reset to '${rawPassword}' successfully.`,
+      username: updatedUser.username,
+    });
+  } catch (err) {
+    console.error("❌ Reset password failed:", err);
+    res.status(500).json({ message: "Failed to reset password", error: err.message });
+  }
+});
 
 export default router;
