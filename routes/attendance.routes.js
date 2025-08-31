@@ -98,14 +98,25 @@ router.get('/my', authMiddleware, async (req, res) => {
 // ✅ GET: All Attendance (Admin View) with Filters + Notes + Branch check
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const { role, project, month, year } = req.query;
+    const { role, project, month, year, startDate, endDate } = req.query;
 
-    // Date filter
-    const monthNum = parseInt(month) || new Date().getMonth() + 1;
-    const yearNum = parseInt(year) || new Date().getFullYear();
+    let filterStart, filterEnd;
 
-    const startDate = new Date(yearNum, monthNum - 1, 1);
-    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
+    if (startDate && endDate) {
+      // Custom date range
+      filterStart = new Date(startDate);
+      filterStart.setHours(0, 0, 0, 0);
+
+      filterEnd = new Date(endDate);
+      filterEnd.setHours(23, 59, 59, 999);
+    } else {
+      // Month + year fallback
+      const monthNum = parseInt(month) || new Date().getMonth() + 1;
+      const yearNum = parseInt(year) || new Date().getFullYear();
+
+      filterStart = new Date(yearNum, monthNum - 1, 1);
+      filterEnd = new Date(yearNum, monthNum, 0, 23, 59, 59);
+    }
 
     // Build user filter
     const userQuery = {};
@@ -117,11 +128,11 @@ router.get('/', authMiddleware, async (req, res) => {
     // Find all users (respect role/project filter)
     const users = await User.find(userQuery).populate('assignedBranches').lean();
 
-    // Find attendance records for those users within the month
+    // Find attendance records for those users within date range
     const userIds = users.map((u) => u._id);
     const records = await Attendance.find({
       user: { $in: userIds },
-      createdAt: { $gte: startDate, $lte: endDate },
+      createdAt: { $gte: filterStart, $lte: filterEnd },
     })
       .sort({ createdAt: -1 })
       .populate('user', 'name role email employeeId assignedBranches');
@@ -139,14 +150,13 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
 
-    // ✅ Load all branches once
+    // ✅ Load branches once
     const Branch = (await import('../models/Branch.js')).default;
     const branches = await Branch.find().lean();
 
     function findBranchForPunch(lat, lng, assignedBranchIds) {
       if (!lat || !lng) return null;
 
-      // filter only assigned branches
       const assigned = branches.filter((b) =>
         assignedBranchIds?.some((id) => id.toString() === b._id.toString())
       );
@@ -162,7 +172,6 @@ router.get('/', authMiddleware, async (req, res) => {
       return null;
     }
 
-    // ✅ Final enrichment
     const enriched = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split('T')[0];
       const branchName = findBranchForPunch(
@@ -184,6 +193,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
+
 
 
 
