@@ -1,13 +1,14 @@
 import express from 'express';
 import Attendance from '../models/Attendance.js';
-import authMiddleware from '../middleware/authMiddleware.js'; 
+import authMiddleware from '../middleware/authMiddleware.js';
 import upload from '../config/multer.js';
 import User from '../models/User.js';
-import mongoose from 'mongoose'; 
+import mongoose from 'mongoose';
 import axios from 'axios'; //  For reverse geocoding
 import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
+import Branch from '../models/Branch.js';
 
 const router = express.Router();
 
@@ -138,13 +139,34 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
 
+    // ✅ Load branches for location lookup
+    const Branch = (await import('../models/Branch.js')).default;
+    const branches = await Branch.find().lean();
+
+    function findBranchForPunch(lat, lng) {
+      if (!lat || !lng) return null;
+      for (const b of branches) {
+        const distance = Math.sqrt(
+          Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)
+        ) * 111000; // rough meters
+        if (distance <= (b.radius || 500)) {
+          return b.name;
+        }
+      }
+      return null;
+    }
+
     const enriched = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split('T')[0];
+      const branchName = findBranchForPunch(Number(r.lat), Number(r.lng));
+
       return {
         ...r.toObject(),
         note: notesMap.get(`${r.user?._id}_${dateKey}`) || '',
+        branch: branchName || 'Outside Assigned Branch',
       };
     });
+
 
     res.json(enriched);
   } catch (err) {
@@ -152,6 +174,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
+
 
 
 
@@ -324,55 +347,78 @@ router.get('/live', authMiddleware, async (req, res) => {
 
     const users = await User.find(userQuery);
 
+    // ✅ Load branches for lookup
+    const Branch = (await import('../models/Branch.js')).default;
+    const branches = await Branch.find().lean();
+
+    function findBranchForPunch(lat, lng) {
+      if (!lat || !lng) return null;
+      for (const b of branches) {
+        const distance = Math.sqrt(
+          Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)
+        ) * 111000; // rough meters
+        if (distance <= (b.radius || 500)) {
+          return b.name;
+        }
+      }
+      return null;
+    }
+
     const liveData = users.map((user) => {
-      const records = attendanceToday.filter((a) =>
-        a.user._id.toString() === user._id.toString()
+      const records = attendanceToday.filter(
+        (a) => a.user._id.toString() === user._id.toString()
       );
 
-      const punchIn = records.find((r) => r.punchType === "in");
-      const punchOut = records.find((r) => r.punchType === "out");
+      const punchIn = records.find((r) => r.punchType === 'in');
+      const punchOut = records.find((r) => r.punchType === 'out');
 
-      let status = "no_punch";
+      let status = 'no_punch';
       let punchTime = null;
-      let location = null;
+      let branchName = null;
       let selfieUrl = null;
 
       if (punchIn && !punchOut) {
-        status = "in";
-        punchTime = new Date(punchIn.createdAt).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
+        status = 'in';
+        punchTime = new Date(punchIn.createdAt).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
         });
-        location = punchIn.location;
+        branchName =
+          findBranchForPunch(Number(punchIn.lat), Number(punchIn.lng)) ||
+          'Outside Assigned Branch';
         selfieUrl = punchIn.selfieUrl;
       } else if (punchIn && punchOut) {
-        status = "out";
-        punchTime = new Date(punchOut.createdAt).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
+        status = 'out';
+        punchTime = new Date(punchOut.createdAt).toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
         });
-        location = punchOut.location;
+        branchName =
+          findBranchForPunch(Number(punchOut.lat), Number(punchOut.lng)) ||
+          'Outside Assigned Branch';
         selfieUrl = punchOut.selfieUrl;
       }
 
       return {
         _id: user._id,
         name: user.name,
+        role: user.role,
         status,
         punchTime,
-        location,
+        branch: branchName, // ✅ branch instead of location
         selfieUrl,
         avatar: user.photo || null,
-        role: user.role,
-        branches: user.assignedBranches,
       };
     });
 
     res.json(liveData);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to fetch live attendance' });
+    res
+      .status(500)
+      .json({ message: 'Failed to fetch live attendance' });
   }
 });
+
 
 export default router;
