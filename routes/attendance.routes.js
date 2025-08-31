@@ -9,6 +9,7 @@ import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
+import AttendanceNote from '../models/AttendanceNote.js';
 
 const router = express.Router();
 
@@ -449,6 +450,37 @@ router.get('/live', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch live attendance' });
+  }
+});
+
+// ✅ GET note for user+date
+router.get('/notes/:userId/:date', authMiddleware, async (req, res) => {
+  try {
+    const { userId, date } = req.params;
+    const note = await AttendanceNote.findOne({ userId, date });
+    res.json(note || { note: '' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to fetch note' });
+  }
+});
+
+// ✅ POST/UPDATE note
+router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
+  try {
+    const { userId, date } = req.params;
+    const { note } = req.body;
+
+    const updated = await AttendanceNote.findOneAndUpdate(
+      { userId, date },
+      { userId, date, note },
+      { upsert: true, new: true }
+    );
+
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to save note' });
   }
 });
 
