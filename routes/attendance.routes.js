@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import axios from 'axios'; //  For reverse geocoding
 import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
+import Leave from '../models/Leave.js';
 
 const router = express.Router();
 
@@ -106,84 +107,132 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET: Attendance Summary
+
+
+// ✅ GET: Attendance Summary (Aggregated per User)
 router.get('/summary', authMiddleware, async (req, res) => {
   try {
-    const { project, month, year } = req.query;
+    let { project, role, month, year } = req.query;
 
-    const startDate = new Date(year, month - 1, 1);
-    const endDate = new Date(year, month, 0, 23, 59, 59);
+    const monthNum = parseInt(month) || new Date().getMonth() + 1;
+    const yearNum = parseInt(year) || new Date().getFullYear();
 
-    const records = await Attendance.aggregate([
-      {
-        $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
-        },
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: 'user',
-          foreignField: '_id',
-          as: 'user',
-        },
-      },
-      { $unwind: '$user' },
-      {
-        $match: {
-          'user.project': new mongoose.Types.ObjectId(project),
-          ...(role && { 'user.role': role })
-        },
-      },
-      {
-        $group: {
-          _id: '$user._id',
-          user: { $first: '$user' },
-          present: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'in'] }, 1, 0],
-            },
-          },
-          absent: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'absent'] }, 1, 0],
-            },
-          },
-          halfDay: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'half'] }, 1, 0],
-            },
-          },
-          weekOff: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'weekoff'] }, 1, 0],
-            },
-          },
-          paidLeave: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'paidleave'] }, 1, 0],
-            },
-          },
-          unpaidLeave: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'unpaidleave'] }, 1, 0],
-            },
-          },
-          overtime: {
-            $sum: {
-              $cond: [{ $eq: ['$punchType', 'overtime'] }, 1, 0],
-            },
-          },
-        },
-      },
-    ]);
+    const startDate = new Date(yearNum, monthNum - 1, 1);
+    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
 
-    res.json(records);
+    // Fetch users by role/project
+    const userQuery = {};
+    //if (project) userQuery.project = project;
+    if (role) userQuery.role = role.toLowerCase();
+
+    const users = await User.find(userQuery).lean();
+
+    const results = [];
+
+    for (const u of users) {
+      const punches = await Attendance.find({
+        user: u._id,
+        createdAt: { $gte: startDate, $lte: endDate },
+      }).lean();
+
+      // Group punches per day
+      const byDay = {};
+      punches.forEach((p) => {
+        const key = new Date(p.createdAt).toISOString().split('T')[0];
+        if (!byDay[key]) byDay[key] = { ins: [], outs: [] };
+        if (p.punchType === 'in') byDay[key].ins.push(new Date(p.createdAt));
+        if (p.punchType === 'out') byDay[key].outs.push(new Date(p.createdAt));
+      });
+
+      // Counters
+      let present = 0,
+        absent = 0,
+        halfDay = 0,
+        weekOff = 0,
+        overtime = 0;
+
+      // --- NEW: Fetch leaves for this user in this month
+      const leaves = await Leave.find({
+        user: u._id,
+        startDate: { $lte: endDate },
+        endDate: { $gte: startDate },
+      }).lean();
+
+      let paidLeave = 0,
+        unpaidLeave = 0;
+
+      const leaveDays = new Set();
+      leaves.forEach((leave) => {
+        const leaveStart = leave.startDate < startDate ? startDate : leave.startDate;
+        const leaveEnd = leave.endDate > endDate ? endDate : leave.endDate;
+
+        for (let d = new Date(leaveStart); d <= leaveEnd; d.setDate(d.getDate() + 1)) {
+          const key = d.toISOString().split('T')[0];
+          leaveDays.add(key);
+          if (leave.type === 'paid') paidLeave++;
+          if (leave.type === 'unpaid') unpaidLeave++;
+        }
+      });
+
+      // Process each day of the month
+      const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
+      for (let day = 1; day <= daysInMonth; day++) {
+        const d = new Date(yearNum, monthNum - 1, day);
+        const key = d.toISOString().split('T')[0];
+        const dow = d.getDay();
+
+        if (dow === 0) {
+          weekOff++;
+          continue;
+        }
+
+        if (leaveDays.has(key)) {
+          continue; // Skip days already counted as leave
+        }
+
+        const data = byDay[key];
+        if (!data) {
+          absent++;
+          continue;
+        }
+
+        if (data.ins.length && data.outs.length) {
+          const firstIn = Math.min(...data.ins.map((x) => x.getTime()));
+          const lastOut = Math.max(...data.outs.map((x) => x.getTime()));
+          const minutes = Math.round((lastOut - firstIn) / 60000);
+
+          if (minutes >= 480) present++;
+          else if (minutes >= 240) halfDay++;
+          else absent++;
+
+          if (minutes > 540) overtime++;
+        } else {
+          halfDay++;
+        }
+      }
+
+      results.push({
+        name: u.name,
+        employeeId: u.employeeId || '-',
+        present,
+        absent,
+        halfDay,
+        weekOff,
+        paidLeave,
+        unpaidLeave,
+        overtime,
+      });
+    }
+
+    res.json(results);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to generate summary' });
   }
 });
+
+
+
 
 // ✅ GET: Is User Already Punched In/Out Today?
 router.get('/today', authMiddleware, async (req, res) => {

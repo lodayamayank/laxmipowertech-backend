@@ -10,20 +10,37 @@ import vendorRoutes from './routes/vendor.routes.js';
 import branchRoutes from './routes/branch.routes.js';
 import mapRoutes from './routes/map.routes.js';
 import rolesRoutes from './routes/roles.routes.js';
+import attendanceNotesRoutes from './routes/attendanceNotes.routes.js';
 dotenv.config();
 const app = express();
 
 const PORT = process.env.PORT || 5000;
 
-const allowedOrigins = [
-   'http://localhost:5173',
-  'http://192.168.29.92:5173'
-];
+// const allowedOrigins = [
+//    'http://localhost:5173',
+//   'http://192.168.29.92:5173'
+// ];
+const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [];
 
 app.use(cors({
-  origin: true,
-  credentials: true
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
 }));
+
+// app.options('*', cors()); // Preflight support
+
+
+// app.use(cors({
+//   origin: true,
+//   credentials: true
+// }));
 
 
 // ✅ This line is critical for preflight (OPTIONS) support
@@ -43,6 +60,7 @@ app.use('/api/vendors', vendorRoutes);
 app.use('/api/branches', branchRoutes);
 app.use('/api/map', mapRoutes);
 app.use('/api/roles', rolesRoutes);
+app.use('/api/attendanceNotes', attendanceNotesRoutes);
 // DB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
