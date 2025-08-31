@@ -17,29 +17,31 @@ router.post('/register', authMiddleware, async (req, res) => {
   try {
     let { password, ...rest } = req.body;
 
-    console.log("👉 Incoming password:", password);
-
-    // force default if blank/undefined
+    // Always ensure password is set
     const rawPassword = password && password.trim()
       ? password.trim()
       : "default123";
-
-    console.log("👉 Raw password used:", rawPassword);
 
     const hashedPassword = await bcrypt.hash(rawPassword, 10);
 
     const newUser = new User({
       ...rest,
+      username: rest.username.trim().toLowerCase(),
       password: hashedPassword,
     });
 
     await newUser.save();
-    res.status(201).json(newUser);
+
+    const populatedUser = await User.findById(newUser._id)
+      .populate('project', 'name')
+      .populate('assignedBranches', 'name radius lat lng address');
+
+    res.status(201).json(populatedUser);
   } catch (err) {
-    console.error("❌ Register failed:", err);
     res.status(400).json({ message: 'Failed to register user', error: err.message });
   }
 });
+
 
 
 
