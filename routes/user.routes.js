@@ -12,18 +12,15 @@ router.get('/roles', (req, res) => {
   res.json(roles);
 });
 
-// ✅ Register a user (with password hashing)
+// ✅ Register a user (with password hashing + default fallback)
 router.post('/register', authMiddleware, async (req, res) => {
   try {
     let { password, ...rest } = req.body;
 
-    // Fallback if password not provided
-    if (!password || password.trim() === '') {
-      password = 'default123';
-    }
+    // Ensure a default password if none is provided
+    const rawPassword = password && password.trim() ? password.trim() : "default123";
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-
+    const hashedPassword = await bcrypt.hash(rawPassword, 10);
     const newUser = new User({
       ...rest,
       password: hashedPassword,
@@ -37,10 +34,10 @@ router.post('/register', authMiddleware, async (req, res) => {
 
     res.status(201).json(populatedUser);
   } catch (err) {
+    console.error("❌ User registration failed:", err);
     res.status(400).json({ message: 'Failed to register user', error: err.message });
   }
 });
-
 
 // ✅ Get current user profile
 router.get('/me', authMiddleware, async (req, res) => {
@@ -69,7 +66,7 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Update current user profile (skip hashing here unless password is updated)
+// ✅ Update current user profile
 router.put('/me', authMiddleware, async (req, res) => {
   try {
     const userId = req.user._id;
@@ -92,15 +89,20 @@ router.put('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Update user by ID (with optional password hashing)
+// ✅ Update user by ID (with optional password hashing + safe default)
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     const updateData = { ...req.body };
 
-    if (updateData.password) {
-      updateData.password = await bcrypt.hash(updateData.password, 10);
+    if (updateData.password && updateData.password.trim()) {
+      // Hash new password if provided
+      updateData.password = await bcrypt.hash(updateData.password.trim(), 10);
+    } else {
+      // 🚫 Don’t overwrite password if blank/undefined
+      delete updateData.password;
     }
-    //Remove invalid project field
+
+    // Remove invalid project field
     if (!updateData.project || updateData.project === '') {
       delete updateData.project;
     }
@@ -116,6 +118,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to update user', error: err.message });
   }
 });
+
 
 // ✅ Delete a user
 router.delete('/:id', authMiddleware, async (req, res) => {
