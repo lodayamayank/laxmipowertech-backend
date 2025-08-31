@@ -95,7 +95,7 @@ router.get('/my', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET: All Attendance (Admin View) with Filters + Notes
+// ✅ GET: All Attendance (Admin View) with Filters + Notes + Branch check
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const { role, project, month, year } = req.query;
@@ -115,7 +115,7 @@ router.get('/', authMiddleware, async (req, res) => {
     }
 
     // Find all users (respect role/project filter)
-    const users = await User.find(userQuery).lean();
+    const users = await User.find(userQuery).populate('assignedBranches').lean();
 
     // Find attendance records for those users within the month
     const userIds = users.map((u) => u._id);
@@ -124,7 +124,7 @@ router.get('/', authMiddleware, async (req, res) => {
       createdAt: { $gte: startDate, $lte: endDate },
     })
       .sort({ createdAt: -1 })
-      .populate('user', 'name role email employeeId project');
+      .populate('user', 'name role email employeeId assignedBranches');
 
     // ✅ Enrich with notes
     const AttendanceNote = (await import('../models/AttendanceNote.js')).default;
@@ -139,16 +139,22 @@ router.get('/', authMiddleware, async (req, res) => {
 
     const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
 
-    // ✅ Load branches for location lookup
+    // ✅ Load all branches once
     const Branch = (await import('../models/Branch.js')).default;
     const branches = await Branch.find().lean();
 
-    function findBranchForPunch(lat, lng) {
+    function findBranchForPunch(lat, lng, assignedBranchIds) {
       if (!lat || !lng) return null;
-      for (const b of branches) {
+
+      // filter only assigned branches
+      const assigned = branches.filter((b) =>
+        assignedBranchIds?.some((id) => id.toString() === b._id.toString())
+      );
+
+      for (const b of assigned) {
         const distance = Math.sqrt(
           Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)
-        ) * 111000; // rough meters
+        ) * 111000; // meters
         if (distance <= (b.radius || 500)) {
           return b.name;
         }
@@ -156,9 +162,14 @@ router.get('/', authMiddleware, async (req, res) => {
       return null;
     }
 
+    // ✅ Final enrichment
     const enriched = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split('T')[0];
-      const branchName = findBranchForPunch(Number(r.lat), Number(r.lng));
+      const branchName = findBranchForPunch(
+        Number(r.lat),
+        Number(r.lng),
+        r.user?.assignedBranches || []
+      );
 
       return {
         ...r.toObject(),
@@ -167,13 +178,13 @@ router.get('/', authMiddleware, async (req, res) => {
       };
     });
 
-
     res.json(enriched);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
+
 
 
 
@@ -327,6 +338,7 @@ router.get('/today', authMiddleware, async (req, res) => {
 });
 
 // ✅ GET: Live Dashboard Attendance (Admin)
+// ✅ GET: Live Dashboard Attendance (Admin)
 router.get('/live', authMiddleware, async (req, res) => {
   try {
     const { project, role, branch } = req.query;
@@ -345,18 +357,24 @@ router.get('/live', authMiddleware, async (req, res) => {
     if (role) userQuery.role = role;
     if (branch) userQuery.assignedBranches = new mongoose.Types.ObjectId(branch);
 
-    const users = await User.find(userQuery);
+    const users = await User.find(userQuery).populate('assignedBranches').lean();
 
-    // ✅ Load branches for lookup
+    // ✅ Load all branches from DB once
     const Branch = (await import('../models/Branch.js')).default;
     const branches = await Branch.find().lean();
 
-    function findBranchForPunch(lat, lng) {
+    function findBranchForPunch(lat, lng, assignedBranchIds) {
       if (!lat || !lng) return null;
-      for (const b of branches) {
+
+      // filter only branches assigned to this user
+      const assigned = branches.filter((b) =>
+        assignedBranchIds.some((id) => id.toString() === b._id.toString())
+      );
+
+      for (const b of assigned) {
         const distance = Math.sqrt(
           Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)
-        ) * 111000; // rough meters
+        ) * 111000; // meters
         if (distance <= (b.radius || 500)) {
           return b.name;
         }
@@ -374,7 +392,7 @@ router.get('/live', authMiddleware, async (req, res) => {
 
       let status = 'no_punch';
       let punchTime = null;
-      let branchName = null;
+      let branchName = 'Outside Assigned Branch';
       let selfieUrl = null;
 
       if (punchIn && !punchOut) {
@@ -384,8 +402,11 @@ router.get('/live', authMiddleware, async (req, res) => {
           minute: '2-digit',
         });
         branchName =
-          findBranchForPunch(Number(punchIn.lat), Number(punchIn.lng)) ||
-          'Outside Assigned Branch';
+          findBranchForPunch(
+            Number(punchIn.lat),
+            Number(punchIn.lng),
+            user.assignedBranches
+          ) || 'Outside Assigned Branch';
         selfieUrl = punchIn.selfieUrl;
       } else if (punchIn && punchOut) {
         status = 'out';
@@ -394,8 +415,11 @@ router.get('/live', authMiddleware, async (req, res) => {
           minute: '2-digit',
         });
         branchName =
-          findBranchForPunch(Number(punchOut.lat), Number(punchOut.lng)) ||
-          'Outside Assigned Branch';
+          findBranchForPunch(
+            Number(punchOut.lat),
+            Number(punchOut.lng),
+            user.assignedBranches
+          ) || 'Outside Assigned Branch';
         selfieUrl = punchOut.selfieUrl;
       }
 
@@ -405,7 +429,7 @@ router.get('/live', authMiddleware, async (req, res) => {
         role: user.role,
         status,
         punchTime,
-        branch: branchName, // ✅ branch instead of location
+        branch: branchName,
         selfieUrl,
         avatar: user.photo || null,
       };
@@ -414,11 +438,10 @@ router.get('/live', authMiddleware, async (req, res) => {
     res.json(liveData);
   } catch (err) {
     console.error(err);
-    res
-      .status(500)
-      .json({ message: 'Failed to fetch live attendance' });
+    res.status(500).json({ message: 'Failed to fetch live attendance' });
   }
 });
+
 
 
 export default router;
