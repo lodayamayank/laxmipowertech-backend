@@ -94,18 +94,41 @@ router.get('/my', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ GET: All Attendance (Admin View)
+// ✅ GET: All Attendance (Admin View) with Notes
 router.get('/', authMiddleware, async (req, res) => {
   try {
     const records = await Attendance.find()
       .sort({ createdAt: -1 })
-      .populate('user', 'name email');
-    res.json(records);
+      .populate('user', 'name email employeeId');
+
+    // pull notes in one go
+    const AttendanceNote = (await import('../models/AttendanceNote.js')).default;
+    const keys = records.map(r => ({
+      user: r.user?._id,
+      date: new Date(r.createdAt).toISOString().split('T')[0]
+    }));
+
+    const notes = await AttendanceNote.find({
+      $or: keys.map(k => ({ userId: k.user, date: k.date }))
+    }).lean();
+
+    const notesMap = new Map(notes.map(n => [`${n.userId}_${n.date}`, n.note]));
+
+    const enriched = records.map(r => {
+      const dateKey = new Date(r.createdAt).toISOString().split('T')[0];
+      return {
+        ...r.toObject(),
+        note: notesMap.get(`${r.user?._id}_${dateKey}`) || ''
+      };
+    });
+
+    res.json(enriched);
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
+
 
 
 
