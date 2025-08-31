@@ -1,3 +1,4 @@
+// --- backend/routes/auth.routes.js ---
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -6,45 +7,52 @@ import protect from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// Login Route
+// ✅ Login Route
 router.post('/login', async (req, res) => {
   console.log('📲 Login attempt from:', req.ip);
   console.log('Request body:', req.body);
 
   try {
-    const { username, password } = req.body;
+    let { username, password } = req.body;
 
-    // const user = await User.findOne({ email });
-    // if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username and password are required' });
+    }
 
-    // const isMatch = await bcrypt.compare(password, user.password);
-    // if (!isMatch) return res.status(401).json({ message: 'Invalid credentials' });
+    // ✅ Normalize username (trim + lowercase)
+    username = username.trim().toLowerCase();
 
-    
     const user = await User.findOne({ username });
     if (!user) {
       console.log("❌ No user found for:", username);
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    // ✅ Compare password
     const isMatch = await bcrypt.compare(password, user.password);
+    console.log("🔑 Login attempt:", {
+      entered: password,
+      stored: user.password,
+      match: isMatch,
+    });
+
     if (!isMatch) {
-      console.log("❌ Password mismatch for user:", username);
-      console.log("Entered:", password);
-      console.log("Stored:", user.password);
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
-      expiresIn: '7d',
-    });
+    // ✅ Generate token
+    const token = jwt.sign(
+      { id: user._id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
     res.status(200).json({
       message: 'Login successful',
       token,
       user: {
         id: user._id,
         name: user.name,
-        //email: user.email,
         role: user.role,
         username: user.username,
       },
@@ -55,7 +63,7 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Authenticated profile test route
+// ✅ Authenticated profile test route
 router.get('/me', protect, async (req, res) => {
   try {
     const user = await User.findById(req.user.id)
@@ -76,6 +84,5 @@ router.get('/me', protect, async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch user profile', error: err.message });
   }
 });
-
 
 export default router;
