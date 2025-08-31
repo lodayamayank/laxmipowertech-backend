@@ -15,9 +15,15 @@ router.get('/roles', (req, res) => {
 // ✅ Register a user (with password hashing)
 router.post('/register', authMiddleware, async (req, res) => {
   try {
-    const { password, ...rest } = req.body;
+    let { password, ...rest } = req.body;
+
+    // Fallback if password not provided
+    if (!password || password.trim() === '') {
+      password = 'default123';
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
     const newUser = new User({
       ...rest,
       password: hashedPassword,
@@ -34,6 +40,7 @@ router.post('/register', authMiddleware, async (req, res) => {
     res.status(400).json({ message: 'Failed to register user', error: err.message });
   }
 });
+
 
 // ✅ Get current user profile
 router.get('/me', authMiddleware, async (req, res) => {
