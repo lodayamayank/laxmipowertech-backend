@@ -6,43 +6,35 @@ import AttendanceNote from "../models/AttendanceNote.js";
 const router = express.Router();
 
 // ✅ Get ALL notes (with filters + pagination)
+// Get all notes (with optional search + pagination)
 router.get("/", auth, async (req, res) => {
   try {
-    const { user, search, startDate, endDate, page = 1, limit = 20 } = req.query;
+    const { search = "", page = 1, limit = 10 } = req.query;
 
-    const filter = {};
+    const query = search
+      ? { note: { $regex: search, $options: "i" } }
+      : {};
 
-    if (user) filter.userId = user;
-    if (startDate && endDate) {
-      filter.date = { $gte: startDate, $lte: endDate };
-    }
+    const notes = await AttendanceNote.find(query)
+      .populate("userId", "name role") // bring in user details
+      .skip((page - 1) * limit)
+      .limit(Number(limit))
+      .sort({ createdAt: -1 });
 
-    if (search) {
-      filter.note = { $regex: search, $options: "i" };
-    }
-
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-
-    const [notes, total] = await Promise.all([
-      AttendanceNote.find(filter)
-        .populate("userId", "name username role")
-        .sort({ date: -1 })
-        .skip(skip)
-        .limit(parseInt(limit)),
-      AttendanceNote.countDocuments(filter),
-    ]);
+    const total = await AttendanceNote.countDocuments(query);
 
     res.json({
       notes,
       total,
-      page: parseInt(page),
-      totalPages: Math.ceil(total / limit),
+      page: Number(page),
+      pages: Math.ceil(total / limit),
     });
   } catch (err) {
     console.error("❌ Failed to fetch notes:", err);
-    res.status(500).json({ message: "Failed to fetch notes", error: err.message });
+    res.status(500).json({ message: "Failed to fetch notes" });
   }
 });
+
 
 // ✅ Get note for user + date
 router.get("/:userId/:date", auth, async (req, res) => {
