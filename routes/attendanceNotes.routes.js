@@ -2,38 +2,77 @@
 import express from "express";
 import auth from "../middleware/authMiddleware.js";
 import AttendanceNote from "../models/AttendanceNote.js";
-
+import Attendance from "../models/Attendance.js";
+import Branch from "../models/Branch.js";
 const router = express.Router();
 
-// routes/attendanceNotes.routes.js
 router.get("/", auth, async (req, res) => {
   try {
-    const { search = "", page = 1, limit = 10 } = req.query;
+    const { search = "", role, userId, branch, startDate, endDate, page = 1, limit = 10 } = req.query;
 
-    const query = search
-      ? { note: { $regex: search, $options: "i" } }
-      : {};
+    const query = {};
+    if (search) query.note = { $regex: search, $options: "i" };
+    if (userId) query.userId = userId;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    const notes = await AttendanceNote.find(query)
-      .populate({
-        path: "userId",
-        select: "name role assignedBranches",
-        populate: { path: "assignedBranches", select: "name" },
-      })
+    let notes = await AttendanceNote.find(query)
+      .populate("userId", "name role")
       .sort({ date: -1 })
       .skip(skip)
-      .limit(parseInt(limit));
+      .limit(parseInt(limit))
+      .lean();
 
-    const total = await AttendanceNote.countDocuments(query);
+    // Filter by role if provided
+    if (role) {
+      notes = notes.filter((n) => n.userId?.role?.toLowerCase() === role.toLowerCase());
+    }
 
+    // Date filter
+    if (startDate || endDate) {
+      const start = startDate ? new Date(startDate) : new Date("2000-01-01");
+      const end = endDate ? new Date(endDate) : new Date();
+      notes = notes.filter((n) => {
+        const d = new Date(n.date);
+        return d >= start && d <= end;
+      });
+    }
+
+    // 🔎 Attach branch based on punch for same user+date
+    for (let n of notes) {
+      const punches = await Attendance.find({
+        user: n.userId._id,
+        createdAt: {
+          $gte: new Date(n.date + "T00:00:00Z"),
+          $lte: new Date(n.date + "T23:59:59Z"),
+        },
+      }).lean();
+
+      if (punches.length > 0) {
+        // take first punch location
+        const p = punches[0];
+        const branchDoc = await Branch.findOne({
+          _id: { $in: n.userId.assignedBranches },
+        }).lean();
+        n.branch = branchDoc?.name || "Outside Assigned Branch";
+      } else {
+        n.branch = "No Punch";
+      }
+    }
+
+    // Filter by branch if needed
+    if (branch) {
+      notes = notes.filter((n) => n.branch === branch);
+    }
+
+    const total = notes.length;
     res.json({ notes, total });
   } catch (err) {
     console.error("❌ Failed to fetch notes:", err);
     res.status(500).json({ message: "Failed to fetch notes" });
   }
 });
+
 
 
 
