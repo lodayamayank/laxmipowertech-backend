@@ -115,6 +115,7 @@ router.get("/", auth, async (req, res) => {
   }
 });
 
+
 // ✅ Get note for user + date
 router.get("/:userId/:date", auth, async (req, res) => {
   try {
