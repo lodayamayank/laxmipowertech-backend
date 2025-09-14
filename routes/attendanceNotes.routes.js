@@ -5,7 +5,7 @@ import AttendanceNote from "../models/AttendanceNote.js";
 
 const router = express.Router();
 
-// Get all notes (with user info, pagination & search)
+// routes/attendanceNotes.routes.js
 router.get("/", auth, async (req, res) => {
   try {
     const { search = "", page = 1, limit = 10 } = req.query;
@@ -17,7 +17,11 @@ router.get("/", auth, async (req, res) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
     const notes = await AttendanceNote.find(query)
-      .populate("userId", "name role") // ✅ populate name & role
+      .populate({
+        path: "userId",
+        select: "name role assignedBranches",
+        populate: { path: "assignedBranches", select: "name" },
+      })
       .sort({ date: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -30,6 +34,7 @@ router.get("/", auth, async (req, res) => {
     res.status(500).json({ message: "Failed to fetch notes" });
   }
 });
+
 
 
 
