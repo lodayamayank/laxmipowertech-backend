@@ -8,73 +8,112 @@ const router = express.Router();
 
 router.get("/", auth, async (req, res) => {
   try {
-    const { search = "", role, userId, branch, startDate, endDate, page = 1, limit = 10 } = req.query;
-
-    const query = {};
-    if (search) query.note = { $regex: search, $options: "i" };
-    if (userId) query.userId = userId;
+    const {
+      search = "",
+      role = "",
+      branch = "",
+      startDate = "",
+      endDate = "",
+      page = 1,
+      limit = 10,
+    } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    let notes = await AttendanceNote.find(query)
-      .populate("userId", "name role")
-      .sort({ date: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .lean();
-
-    // Filter by role if provided
-    if (role) {
-      notes = notes.filter((n) => n.userId?.role?.toLowerCase() === role.toLowerCase());
+    // Build match filter
+    const match = {};
+    if (search) {
+      match.note = { $regex: search, $options: "i" };
+    }
+    if (startDate && endDate) {
+      match.date = { $gte: startDate, $lte: endDate };
+    } else if (startDate) {
+      match.date = { $gte: startDate };
+    } else if (endDate) {
+      match.date = { $lte: endDate };
     }
 
-    // Date filter
-    if (startDate || endDate) {
-      const start = startDate ? new Date(startDate) : new Date("2000-01-01");
-      const end = endDate ? new Date(endDate) : new Date();
-      notes = notes.filter((n) => {
-        const d = new Date(n.date);
-        return d >= start && d <= end;
-      });
-    }
+    // Aggregation
+    const pipeline = [
+      { $match: match },
 
-    // 🔎 Attach branch based on punch for same user+date
-    for (let n of notes) {
-      const punches = await Attendance.find({
-        user: n.userId._id,
-        createdAt: {
-          $gte: new Date(n.date + "T00:00:00Z"),
-          $lte: new Date(n.date + "T23:59:59Z"),
+      // Join user info
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "user",
         },
-      }).lean();
+      },
+      { $unwind: "$user" },
 
-      if (punches.length > 0) {
-        // take first punch location
-        const p = punches[0];
-        const branchDoc = await Branch.findOne({
-          _id: { $in: n.userId.assignedBranches },
-        }).lean();
-        n.branch = branchDoc?.name || "Outside Assigned Branch";
-      } else {
-        n.branch = "No Punch";
-      }
-    }
+      // Optional role filter
+      ...(role ? [{ $match: { "user.role": role } }] : []),
 
-    // Filter by branch if needed
-    if (branch) {
-      notes = notes.filter((n) => n.branch === branch);
-    }
+      // Join attendance to find branch
+      {
+        $lookup: {
+          from: "attendances",
+          let: { uId: "$userId", d: "$date" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$userId", "$$uId"] },
+                    { $eq: ["$date", "$$d"] },
+                  ],
+                },
+              },
+            },
+            {
+              $lookup: {
+                from: "branches",
+                localField: "branchId",
+                foreignField: "_id",
+                as: "branch",
+              },
+            },
+            { $unwind: { path: "$branch", preserveNullAndEmptyArrays: true } },
+            { $project: { branchName: "$branch.name" } },
+          ],
+          as: "attendance",
+        },
+      },
+      { $unwind: { path: "$attendance", preserveNullAndEmptyArrays: true } },
 
-    const total = notes.length;
-    res.json({ notes, total });
+      // Optional branch filter
+      ...(branch ? [{ $match: { "attendance.branchName": branch } }] : []),
+
+      // Shape final output
+      {
+        $project: {
+          _id: 1,
+          date: 1,
+          note: 1,
+          userName: "$user.name",
+          role: "$user.role",
+          branch: "$attendance.branchName",
+        },
+      },
+
+      { $sort: { date: -1 } },
+      { $skip: skip },
+      { $limit: parseInt(limit) },
+    ];
+
+    const [data, totalCount] = await Promise.all([
+      AttendanceNote.aggregate(pipeline),
+      AttendanceNote.countDocuments(match),
+    ]);
+
+    res.json({ notes: data, total: totalCount });
   } catch (err) {
     console.error("❌ Failed to fetch notes:", err);
-    res.status(500).json({ message: "Failed to fetch notes" });
+    res.status(500).json({ message: "Failed to fetch notes", error: err.message });
   }
 });
-
-
-
 
 
 // ✅ Get note for user + date
