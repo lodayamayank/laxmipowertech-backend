@@ -20,7 +20,7 @@ router.get("/", auth, async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Build match filter
+    // Base match (search + date)
     const match = {};
     if (search) {
       match.note = { $regex: search, $options: "i" };
@@ -33,11 +33,11 @@ router.get("/", auth, async (req, res) => {
       match.date = { $lte: endDate };
     }
 
-    // Aggregation
+    // Build aggregation pipeline
     const pipeline = [
-      { $match: match },
-
-      // Join user info
+      { $match: match }, // date filters only
+    
+      // Join user
       {
         $lookup: {
           from: "users",
@@ -47,11 +47,10 @@ router.get("/", auth, async (req, res) => {
         },
       },
       { $unwind: "$user" },
-
-      // Optional role filter
+    
       ...(role ? [{ $match: { "user.role": role } }] : []),
-
-      // Join attendance to find branch
+    
+      // Join attendance → branch
       {
         $lookup: {
           from: "attendances",
@@ -82,11 +81,24 @@ router.get("/", auth, async (req, res) => {
         },
       },
       { $unwind: { path: "$attendance", preserveNullAndEmptyArrays: true } },
-
-      // Optional branch filter
+    
+      // ✅ Apply search across note, user, branch
+      ...(search
+        ? [
+            {
+              $match: {
+                $or: [
+                  { note: { $regex: search, $options: "i" } },
+                  { "user.name": { $regex: search, $options: "i" } },
+                  { "attendance.branchName": { $regex: search, $options: "i" } },
+                ],
+              },
+            },
+          ]
+        : []),
+    
       ...(branch ? [{ $match: { "attendance.branchName": branch } }] : []),
-
-      // Shape final output
+    
       {
         $project: {
           _id: 1,
@@ -97,23 +109,31 @@ router.get("/", auth, async (req, res) => {
           branch: "$attendance.branchName",
         },
       },
-
-      { $sort: { date: -1 } },
-      { $skip: skip },
-      { $limit: parseInt(limit) },
     ];
+    
 
-    const [data, totalCount] = await Promise.all([
-      AttendanceNote.aggregate(pipeline),
-      AttendanceNote.countDocuments(match),
+    // Pipeline for total count (without skip/limit)
+    const countPipeline = [...pipeline, { $count: "total" }];
+
+    const [data, totalResult] = await Promise.all([
+      AttendanceNote.aggregate([
+        ...pipeline,
+        { $sort: { date: -1 } },
+        { $skip: skip },
+        { $limit: parseInt(limit) },
+      ]),
+      AttendanceNote.aggregate(countPipeline),
     ]);
 
-    res.json({ notes: data, total: totalCount });
+    const total = totalResult.length > 0 ? totalResult[0].total : 0;
+
+    res.json({ notes: data, total });
   } catch (err) {
     console.error("❌ Failed to fetch notes:", err);
     res.status(500).json({ message: "Failed to fetch notes", error: err.message });
   }
 });
+
 
 
 // ✅ Get note for user + date
