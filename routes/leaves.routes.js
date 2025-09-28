@@ -98,26 +98,19 @@ router.patch("/:id/status", auth, async (req, res) => {
       const end = new Date(leave.endDate);
 
       for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        // Map leave.type → punchType
-        let punchType =
-          leave.type === "paid"
-            ? "paidleave"
-            : leave.type === "unpaid"
-            ? "unpaidleave"
-            : "paidleave"; // fallback for sick/casual
-
         await Attendance.findOneAndUpdate(
           { user: leave.user, date: d },
           {
             user: leave.user,
             date: d,
-            punchType,
-            leaveId: leave._id,
+            punchType: "leave",   // 👈 always "leave"
+            leaveId: leave._id,   // 👈 use leaveId to know type (paid/unpaid/sick/casual)
           },
           { upsert: true, new: true }
         );
       }
-    } else {
+    }
+    else {
       // If rejected or set back to pending → remove linked attendance
       await Attendance.deleteMany({ leaveId: leave._id });
     }
