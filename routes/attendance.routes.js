@@ -206,19 +206,6 @@ router.get("/", authMiddleware, async (req, res) => {
   }
 });
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 // ✅ GET: Attendance Summary (Aggregated per User)
 router.get('/summary', authMiddleware, async (req, res) => {
   try {
