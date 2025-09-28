@@ -102,7 +102,7 @@ router.get("/", auth, async (req, res) => {
           userName: "$user.name",
           role: "$user.role",
           branchId: "$attendance.branchId",
-          branch: "$attendance.branchName",
+          branch: { $ifNull: ["$attendance.branchName", "N/A"] },
         },
       },
     ];
