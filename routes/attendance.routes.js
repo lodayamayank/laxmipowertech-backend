@@ -101,14 +101,14 @@ router.get('/my', authMiddleware, async (req, res) => {
 });
 
 
-// ✅ GET: All Attendance (Admin View) with Filters + Notes + Branch check
-router.get('/', authMiddleware, async (req, res) => {
+router.get("/", authMiddleware, async (req, res) => {
   try {
-    const { role, project, month, year, startDate, endDate, page = 1, limit = 20 } = req.query;
+    const { role, project, month, year, startDate, endDate } = req.query;
 
+    // --- Default date range ---
     let filterStart, filterEnd;
 
-    if (startDate && endDate) {
+    if (startDate && endDate && !isNaN(new Date(startDate)) && !isNaN(new Date(endDate))) {
       filterStart = new Date(startDate);
       filterStart.setHours(0, 0, 0, 0);
 
@@ -122,45 +122,96 @@ router.get('/', authMiddleware, async (req, res) => {
       filterEnd = new Date(yearNum, monthNum, 0, 23, 59, 59);
     }
 
-    // Build user filter
+    // --- User filter ---
     const userQuery = {};
-    if (role) userQuery.role = role.toLowerCase();
+    if (role) userQuery.role = String(role).toLowerCase();
+
     if (project && mongoose.Types.ObjectId.isValid(project)) {
       userQuery.project = new mongoose.Types.ObjectId(project);
     }
 
-    // Find all users (respect role/project filter)
-    const users = await User.find(userQuery).populate('assignedBranches').lean();
+    const users = await User.find(userQuery).populate("assignedBranches").lean();
+    if (!users.length) {
+      return res.json([]); // no users matched filters
+    }
+
     const userIds = users.map((u) => u._id);
 
-    // Pagination math
-    const skip = (Number(page) - 1) * Number(limit);
-
-    // Total count first
-    const total = await Attendance.countDocuments(query);
-
-    // Then fetch page of results
-    const records = await Attendance.find(query)
+    // --- Attendance records ---
+    let records = await Attendance.find({
+      user: { $in: userIds },
+      createdAt: { $gte: filterStart, $lte: filterEnd },
+    })
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(Number(limit))
-      .populate('user', 'name role email employeeId assignedBranches')
+      .populate("user", "name role email employeeId assignedBranches")
+      .populate("leaveId", "type")
       .lean();
 
-    // --- enrich with branch + notes same as before ---
-    // (you can reuse your existing branch + note enrichment code here)
+    // --- Notes ---
+    const keys = records
+      .filter((r) => r.user?._id)
+      .map((r) => ({
+        userId: r.user._id,
+        date: new Date(r.createdAt).toISOString().split("T")[0],
+      }));
 
-    res.json({
-      rows: records,
-      total,
-      page: Number(page),
-      totalPages: Math.ceil(total / limit),
+    const notes = await AttendanceNote.find({
+      $or: keys.map((k) => ({ userId: k.userId, date: k.date })),
+    }).lean();
+
+    const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
+
+    // --- Branches ---
+    const branches = await Branch.find().lean();
+
+    function findBranchForPunch(lat, lng, assignedBranchIds) {
+      if (!lat || !lng) return null;
+
+      const assigned = branches.filter((b) =>
+        assignedBranchIds?.some((id) => id.toString() === b._id.toString())
+      );
+
+      for (const b of assigned) {
+        const distance =
+          Math.sqrt(Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)) *
+          111000;
+        if (distance <= (b.radius || 500)) return b.name;
+      }
+      return null;
+    }
+
+    // --- Final enrich ---
+    records = records.map((r) => {
+      const dateKey = new Date(r.createdAt).toISOString().split("T")[0];
+      const branchName = findBranchForPunch(
+        Number(r.lat),
+        Number(r.lng),
+        r.user?.assignedBranches || []
+      );
+      return {
+        ...r,
+        note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
+        branch: branchName || "Outside Assigned Branch",
+      };
     });
+
+    res.json(records);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Failed to fetch attendance records' });
+    console.error("❌ Error in GET /attendance:", err);
+    res.status(500).json({
+      message: "Failed to fetch attendance records",
+      error: err.message,
+      stack: err.stack,
+    });
   }
 });
+
+
+
+
+
+
+
 
 
 
