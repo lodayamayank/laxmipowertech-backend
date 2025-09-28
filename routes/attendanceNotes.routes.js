@@ -11,7 +11,7 @@ router.get("/", auth, async (req, res) => {
     const {
       search = "",
       role = "",
-      branch = "", // will now be branchId
+      branch = "", // branchId
       startDate = "",
       endDate = "",
       page = 1,
@@ -20,7 +20,7 @@ router.get("/", auth, async (req, res) => {
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    // Base filter (only date)
+    // Base filter (dates on notes)
     const match = {};
     if (startDate && endDate) {
       match.date = { $gte: startDate, $lte: endDate };
@@ -33,7 +33,7 @@ router.get("/", auth, async (req, res) => {
     const pipeline = [
       { $match: match },
 
-      // Join user
+      // Join user info
       {
         $lookup: {
           from: "users",
@@ -48,14 +48,19 @@ router.get("/", auth, async (req, res) => {
       {
         $lookup: {
           from: "attendances",
-          let: { uId: "$userId", d: "$date" },
+          let: { uId: "$userId", d: "$date" }, // d is a string (note.date)
           pipeline: [
             {
               $match: {
                 $expr: {
                   $and: [
                     { $eq: ["$userId", "$$uId"] },
-                    { $eq: ["$date", "$$d"] },
+                    {
+                      $eq: [
+                        { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
+                        "$$d",
+                      ],
+                    },
                   ],
                 },
               },
@@ -69,14 +74,19 @@ router.get("/", auth, async (req, res) => {
               },
             },
             { $unwind: { path: "$branch", preserveNullAndEmptyArrays: true } },
-            { $project: { branchId: "$branch._id", branchName: "$branch.name" } },
+            {
+              $project: {
+                branchId: "$branch._id",
+                branchName: "$branch.name",
+              },
+            },
           ],
           as: "attendance",
         },
       },
       { $unwind: { path: "$attendance", preserveNullAndEmptyArrays: true } },
 
-      // ✅ Apply filters and search
+      // ✅ Filters after joins
       {
         $match: {
           ...(role ? { "user.role": role } : {}),
