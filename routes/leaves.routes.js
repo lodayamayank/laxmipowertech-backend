@@ -49,7 +49,11 @@ router.get("/", auth, async (req, res) => {
     }
 
     let leavesQuery = Leave.find(query)
-      .populate("user", "username role assignedBranches")
+      .populate({
+        path: "user",
+        select: "username role assignedBranches",
+        populate: { path: "assignedBranches", select: "name" }  // 👈 added
+      })
       .sort({ createdAt: -1 });
 
     if (role) {
