@@ -2,6 +2,7 @@
 import express from "express";
 import Leave from "../models/Leave.js";
 import auth from "../middleware/authMiddleware.js";
+import Attendance from "../models/Attendance.js";
 
 const router = express.Router();
 
@@ -71,6 +72,7 @@ router.get("/", auth, async (req, res) => {
 });
 
 // ✅ Admin: approve/reject leave
+// PATCH /api/leaves/:id/status
 router.patch("/:id/status", auth, async (req, res) => {
   try {
     if (req.user.role !== "admin" && req.user.role !== "supervisor") {
@@ -90,10 +92,42 @@ router.patch("/:id/status", auth, async (req, res) => {
     leave.approvedAt = new Date();
     await leave.save();
 
-    res.json({ message: "Leave updated", leave });
+    // 🔹 Attendance sync
+    if (status === "approved") {
+      const start = new Date(leave.startDate);
+      const end = new Date(leave.endDate);
+
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        // Map leave.type → punchType
+        let punchType =
+          leave.type === "paid"
+            ? "paidleave"
+            : leave.type === "unpaid"
+            ? "unpaidleave"
+            : "paidleave"; // fallback for sick/casual
+
+        await Attendance.findOneAndUpdate(
+          { user: leave.user, date: d },
+          {
+            user: leave.user,
+            date: d,
+            punchType,
+            leaveId: leave._id,
+          },
+          { upsert: true, new: true }
+        );
+      }
+    } else {
+      // If rejected or set back to pending → remove linked attendance
+      await Attendance.deleteMany({ leaveId: leave._id });
+    }
+
+    res.json({ message: "Leave updated and attendance synced", leave });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ message: "Failed to update leave", error: err.message });
   }
 });
+
 
 export default router;
