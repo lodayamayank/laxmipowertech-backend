@@ -231,13 +231,15 @@ router.get('/summary', authMiddleware, async (req, res) => {
       // Fetch attendance for the user in this month
       const punches = await Attendance.find({
         user: u._id,
-        createdAt: { $gte: startDate, $lte: endDate },
-      }).lean();
+        date: { $gte: startDate, $lte: endDate },   // ✅ use date, not createdAt
+      })
+        .populate("leaveId", "type")                // ✅ populate leaveId
+        .lean();
 
       // Group punches per day
       const byDay = {};
       punches.forEach((p) => {
-        const key = new Date(p.createdAt).toISOString().split('T')[0];
+        const key = new Date(p.date).toISOString().split("T")[0];
         if (!byDay[key]) byDay[key] = [];
         byDay[key].push(p);
       });
@@ -256,7 +258,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
       const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
       for (let day = 1; day <= daysInMonth; day++) {
         const d = new Date(yearNum, monthNum - 1, day);
-        const key = d.toISOString().split('T')[0];
+        const key = d.toISOString().split("T")[0];
         const dow = d.getDay();
 
         const punchesToday = byDay[key] || [];
@@ -266,21 +268,23 @@ router.get('/summary', authMiddleware, async (req, res) => {
           continue;
         }
 
-        if (punchesToday.some((p) => p.punchType === 'leave')) {
-          // classify leave type
-          const leavePunch = punchesToday.find((p) => p.punchType === 'leave');
-          const leaveType = leavePunch?.leaveId?.type || 'unpaid';
+        // ✅ Check for leave
+        const leavePunch = punchesToday.find((p) => p.punchType === "leave");
+        if (leavePunch) {
+          const leaveType = leavePunch.leaveId?.type || "unpaid";
 
-          if (leaveType === 'paid') paidLeave++;
-          else if (leaveType === 'unpaid') unpaidLeave++;
-          else if (leaveType === 'sick') sickLeave++;
-          else if (leaveType === 'casual') casualLeave++;
+          if (leaveType === "paid") paidLeave++;
+          else if (leaveType === "unpaid") unpaidLeave++;
+          else if (leaveType === "sick") sickLeave++;
+          else if (leaveType === "casual") casualLeave++;
+          else unpaidLeave++;
 
           continue;
         }
 
-        const ins = punchesToday.filter((p) => p.punchType === 'in').map((x) => new Date(x.createdAt));
-        const outs = punchesToday.filter((p) => p.punchType === 'out').map((x) => new Date(x.createdAt));
+        // ✅ Check for present/absent
+        const ins = punchesToday.filter((p) => p.punchType === "in").map((x) => new Date(x.createdAt));
+        const outs = punchesToday.filter((p) => p.punchType === "out").map((x) => new Date(x.createdAt));
 
         if (!ins.length && !outs.length) {
           absent++;
@@ -304,7 +308,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
 
       results.push({
         name: u.name,
-        employeeId: u.employeeId || '-',
+        employeeId: u.employeeId || "-",
         present,
         absent,
         halfDay,
@@ -320,9 +324,11 @@ router.get('/summary', authMiddleware, async (req, res) => {
     res.json(results);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to generate summary' });
+    res.status(500).json({ message: "Failed to generate summary" });
   }
 });
+
+
 
 
 
