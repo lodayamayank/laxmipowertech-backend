@@ -18,8 +18,10 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
   console.log('🔥 HIT /api/attendance/punch route');
   try {
     const { punchType, lat, lng } = req.body;
+    console.log("REQ BODY:", req.body);
+    console.log("REQ FILE:", req.file);
+    console.log("REQ USER:", req.user);
 
-    // Validations
     if (!['in', 'out'].includes(punchType)) {
       return res.status(400).json({ message: 'Invalid or missing punch type' });
     }
@@ -30,60 +32,58 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       return res.status(400).json({ message: 'Selfie is required' });
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const lastToday = await Attendance.findOne({
-      user: req.user.id,
-      punchType,
-      createdAt: { $gte: today }
-    });
-
-    if (lastToday) {
-      return res.status(400).json({ message: `Already punched ${punchType.toUpperCase()} today` });
-    }
-
-    // ✅ Reverse geocode location
-    let location = "";
+    // ✅ Reverse geocode
+    let location = `Lat: ${lat}, Lng: ${lng}`;
     try {
       const geoRes = await axios.get("https://nominatim.openstreetmap.org/reverse", {
-        params: {
-          format: "json",
-          lat,
-          lon: lng,
-        },
-        headers: {
-          "User-Agent": "LaxmiPowertechApp/1.0 (contact@laxmipowertech.com)"
-        }
+        params: { format: "json", lat: Number(lat), lon: Number(lng) },
+        headers: { "User-Agent": "LaxmiPowertechApp/1.0" }
       });
-      location = geoRes.data.display_name || `Lat: ${lat}, Lng: ${lng}`;
+      if (geoRes.data?.display_name) {
+        location = geoRes.data.display_name;
+      }
     } catch (error) {
       console.error("Reverse geocoding failed:", error.message);
-      location = `Lat: ${lat}, Lng: ${lng}`;
     }
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      folder: 'laxmipowertech/selfies',
-      public_id: `${req.user.id}_${Date.now()}`,
-    });
-    fs.unlinkSync(req.file.path);
-    // Save attendance
-    const attendance = new Attendance({
-      user: req.user.id,
-      punchType,
-      lat,
-      lng,
-      location,
-      selfieUrl: result.secure_url,
-    });
 
-    await attendance.save();
-    res.status(201).json({ message: 'Punch recorded', attendance });
+    // ✅ Upload selfie
+    let selfieUrl = "";
+    try {
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: "laxmipowertech/selfies",
+        public_id: `${req.user.id}_${Date.now()}`,
+      });
+      selfieUrl = result.secure_url;
+      fs.unlinkSync(req.file.path); // clean up
+    } catch (uploadErr) {
+      console.error("Cloudinary upload failed:", uploadErr);
+      return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
+    }
 
+    // ✅ Save attendance
+    try {
+      const attendance = new Attendance({
+        user: req.user.id,
+        punchType,
+        lat: Number(lat),
+        lng: Number(lng),
+        location,
+        selfieUrl,
+        date: new Date() // if schema requires
+      });
+
+      await attendance.save();
+      return res.status(201).json({ message: "Punch recorded", attendance });
+    } catch (saveErr) {
+      console.error("DB save failed:", saveErr);
+      return res.status(500).json({ error: "Failed to save attendance", details: saveErr.message });
+    }
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to save attendance' });
+    console.error("🔥 Punch route fatal error:", err);
+    res.status(500).json({ error: "Punch route failed", details: err.message });
   }
 });
+
 
 // ✅ GET: My Attendance History (Punches + Leaves)
 // ✅ GET: My Attendance History (with leave info)
