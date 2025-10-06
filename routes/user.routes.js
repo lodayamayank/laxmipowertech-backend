@@ -13,25 +13,47 @@ router.get('/roles', (req, res) => {
 });
 
 // ✅ Register a user (with password hashing + default fallback)
+// router.post('/register', authMiddleware, async (req, res) => {
+//   try {
+//     let { password, ...rest } = req.body;
+
+//     // Always ensure password is set
+//     const rawPassword = password && password.trim()
+//       ? password.trim()
+//       : "default123";
+
+//     const hashedPassword = await bcrypt.hash(rawPassword, 10);
+
+//     const newUser = new User({
+//       ...rest,
+//       username: rest.username.trim().toLowerCase(),
+//       password: hashedPassword,
+//     });
+
+//     await newUser.save();
+
+//     const populatedUser = await User.findById(newUser._id)
+//       .populate('project', 'name')
+//       .populate('assignedBranches', 'name radius lat lng address');
+
+//     res.status(201).json(populatedUser);
+//   } catch (err) {
+//     res.status(400).json({ message: 'Failed to register user', error: err.message });
+//   }
+// });
+// In user.routes.js - Update the register route
 router.post('/register', authMiddleware, async (req, res) => {
   try {
-    let { password, ...rest } = req.body;
-
-    // Always ensure password is set
-    const rawPassword = password && password.trim()
-      ? password.trim()
-      : "default123";
-
-    const hashedPassword = await bcrypt.hash(rawPassword, 10);
+    const { password, ...rest } = req.body;
 
     const newUser = new User({
       ...rest,
       username: rest.username.trim().toLowerCase(),
-      password: hashedPassword,
+      password: password || "default123", // Let the pre-save hook handle hashing
     });
 
     await newUser.save();
-
+    
     const populatedUser = await User.findById(newUser._id)
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
@@ -84,6 +106,17 @@ router.put('/me', authMiddleware, async (req, res) => {
       delete updateData.password;
     }
 
+    const allowedFields = [
+      'name','mobileNumber','personalEmail','dateOfBirth','maritalStatus',
+      'aadhaarNumber','panNumber','drivingLicense','emergencyContact',
+      'address','employeeType','dateOfJoining','dateOfLeaving','employeeId',
+      'department','jobTitle','project','assignedBranches','role','password'
+    ];
+    
+    Object.keys(updateData).forEach((key) => {
+      if (!allowedFields.includes(key)) delete updateData[key];
+    });
+    
     const updated = await User.findByIdAndUpdate(userId, updateData, { new: true })
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
@@ -113,6 +146,17 @@ router.put('/:id', authMiddleware, async (req, res) => {
       delete updateData.project;
     }
 
+    const allowedFields = [
+      'name','mobileNumber','personalEmail','dateOfBirth','maritalStatus',
+      'aadhaarNumber','panNumber','drivingLicense','emergencyContact',
+      'address','employeeType','dateOfJoining','dateOfLeaving','employeeId',
+      'department','jobTitle','project','assignedBranches','role','password'
+    ];
+    
+    Object.keys(updateData).forEach((key) => {
+      if (!allowedFields.includes(key)) delete updateData[key];
+    });
+    
     const updatedUser = await User.findByIdAndUpdate(req.params.id, updateData, {
       new: true,
     })
@@ -166,5 +210,39 @@ router.post('/reset-password/:username', authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Failed to reset password", error: err.message });
   }
 });
+router.put('/:id/personal', authMiddleware, async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+    delete updateData.password; // ⚠️ Never update password through this route
+    delete updateData.username; // ⚠️ Never update username through this route
+    
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true }
+    );
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update personal info', error: err.message });
+  }
+});
+
+router.put('/:id/employee', authMiddleware, async (req, res) => {
+  try {
+    const updateData = { ...req.body };
+    delete updateData.password; // ⚠️ Never update password through this route
+    delete updateData.username; // ⚠️ Never update username through this route
+    
+    const updated = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true }
+    );
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update employee info', error: err.message });
+  }
+});
+
 
 export default router;
