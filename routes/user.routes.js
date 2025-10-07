@@ -110,7 +110,8 @@ router.put('/me', authMiddleware, async (req, res) => {
       'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
       'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
       'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
-      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password'
+      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password',
+      'ctcAmount', 'salaryType', 'salaryEffectiveDate'
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -150,7 +151,8 @@ router.put('/:id', authMiddleware, async (req, res) => {
       'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
       'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
       'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
-      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password', 'username'
+      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password', 'username',
+      'ctcAmount', 'salaryType', 'salaryEffectiveDate'
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -160,20 +162,20 @@ router.put('/:id', authMiddleware, async (req, res) => {
       }
     });
 
-    console.log('📤 [Backend] Filtered updateData:', updateData);
-    console.log('📤 [Backend] Specific fields:', {
-      personalEmail: updateData.personalEmail,
-      dateOfBirth: updateData.dateOfBirth,
-      maritalStatus: updateData.maritalStatus,
-      aadhaarNumber: updateData.aadhaarNumber,
-      panNumber: updateData.panNumber,
-      drivingLicense: updateData.drivingLicense,
-      emergencyContact: updateData.emergencyContact,
-      employeeType: updateData.employeeType,
-      employeeId: updateData.employeeId,
-      department: updateData.department,
-      dateOfLeaving: updateData.dateOfLeaving,
-    });
+    // console.log('📤 [Backend] Filtered updateData:', updateData);
+    // console.log('📤 [Backend] Specific fields:', {
+    //   personalEmail: updateData.personalEmail,
+    //   dateOfBirth: updateData.dateOfBirth,
+    //   maritalStatus: updateData.maritalStatus,
+    //   aadhaarNumber: updateData.aadhaarNumber,
+    //   panNumber: updateData.panNumber,
+    //   drivingLicense: updateData.drivingLicense,
+    //   emergencyContact: updateData.emergencyContact,
+    //   employeeType: updateData.employeeType,
+    //   employeeId: updateData.employeeId,
+    //   department: updateData.department,
+    //   dateOfLeaving: updateData.dateOfLeaving,
+    // });
 
     // Remove empty string values that shouldn't be sent
     Object.keys(updateData).forEach((key) => {
@@ -181,7 +183,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         delete updateData[key];
       }
     });
-    console.log('📤 [Backend] Final updateData after removing empty strings:', updateData);
+    // console.log(' [Backend] Final updateData after removing empty strings:', updateData);
 
     const updatedUser = await User.findByIdAndUpdate(
       req.params.id,
@@ -195,20 +197,20 @@ router.put('/:id', authMiddleware, async (req, res) => {
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
-    console.log('✅ [Backend] Updated user:', updatedUser);
-    console.log('✅ [Backend] Updated specific fields:', {
-      personalEmail: updatedUser.personalEmail,
-      dateOfBirth: updatedUser.dateOfBirth,
-      maritalStatus: updatedUser.maritalStatus,
-      aadhaarNumber: updatedUser.aadhaarNumber,
-      panNumber: updatedUser.panNumber,
-      drivingLicense: updatedUser.drivingLicense,
-      emergencyContact: updatedUser.emergencyContact,
-      employeeType: updatedUser.employeeType,
-      employeeId: updatedUser.employeeId,
-      department: updatedUser.department,
-      dateOfLeaving: updatedUser.dateOfLeaving
-    });
+  //  console.log('✅ [Backend] Updated user:', updatedUser);
+  //   console.log('✅ [Backend] Updated specific fields:', {
+  //     personalEmail: updatedUser.personalEmail,
+  //     dateOfBirth: updatedUser.dateOfBirth,
+  //     maritalStatus: updatedUser.maritalStatus,
+  //     aadhaarNumber: updatedUser.aadhaarNumber,
+  //     panNumber: updatedUser.panNumber,
+  //     drivingLicense: updatedUser.drivingLicense,
+  //     emergencyContact: updatedUser.emergencyContact,
+  //     employeeType: updatedUser.employeeType,
+  //     employeeId: updatedUser.employeeId,
+  //     department: updatedUser.department,
+  //     dateOfLeaving: updatedUser.dateOfLeaving
+  //   });
 
     res.json(updatedUser);
   } catch (err) {
