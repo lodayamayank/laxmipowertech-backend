@@ -172,7 +172,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
       employeeType: updateData.employeeType,
       employeeId: updateData.employeeId,
       department: updateData.department,
-      dateOfLeaving: updateData.dateOfLeaving
+      dateOfLeaving: updateData.dateOfLeaving,
     });
     
     const updatedUser = await User.findByIdAndUpdate(req.params.id, updateData, {
