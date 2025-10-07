@@ -53,7 +53,7 @@ router.post('/register', authMiddleware, async (req, res) => {
     });
 
     await newUser.save();
-    
+
     const populatedUser = await User.findById(newUser._id)
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
@@ -107,16 +107,16 @@ router.put('/me', authMiddleware, async (req, res) => {
     }
 
     const allowedFields = [
-      'name','mobileNumber','personalEmail','dateOfBirth','maritalStatus',
-      'aadhaarNumber','panNumber','drivingLicense','emergencyContact',
-      'address','employeeType','dateOfJoining','dateOfLeaving','employeeId',
-      'department','jobTitle','project','assignedBranches','role','password'
+      'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
+      'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
+      'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
+      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password'
     ];
-    
+
     Object.keys(updateData).forEach((key) => {
       if (!allowedFields.includes(key)) delete updateData[key];
     });
-    
+
     const updated = await User.findByIdAndUpdate(userId, updateData, { new: true })
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
@@ -132,7 +132,7 @@ router.put('/me', authMiddleware, async (req, res) => {
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
     console.log('📥 [Backend] Received req.body:', req.body);
-    
+
     const updateData = { ...req.body };
 
     if (updateData.password && updateData.password.trim()) {
@@ -147,19 +147,19 @@ router.put('/:id', authMiddleware, async (req, res) => {
     }
 
     const allowedFields = [
-      'name','mobileNumber','personalEmail','dateOfBirth','maritalStatus',
-      'aadhaarNumber','panNumber','drivingLicense','emergencyContact',
-      'address','employeeType','dateOfJoining','dateOfLeaving','employeeId',
-      'department','jobTitle','project','assignedBranches','role','password','username'
+      'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
+      'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
+      'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
+      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password', 'username'
     ];
-    
+
     Object.keys(updateData).forEach((key) => {
       if (!allowedFields.includes(key)) {
         console.log(`⚠️ [Backend] Removing disallowed field: ${key}`);
         delete updateData[key];
       }
     });
-    
+
     console.log('📤 [Backend] Filtered updateData:', updateData);
     console.log('📤 [Backend] Specific fields:', {
       personalEmail: updateData.personalEmail,
@@ -174,11 +174,24 @@ router.put('/:id', authMiddleware, async (req, res) => {
       department: updateData.department,
       dateOfLeaving: updateData.dateOfLeaving,
     });
-    
-    const updatedUser = await User.findByIdAndUpdate(req.params.id, updateData, {
-      new: true,
-      runValidators: true // Add this to run schema validators
-    })
+
+    // Remove empty string values that shouldn't be sent
+    Object.keys(updateData).forEach((key) => {
+      if (updateData[key] === '') {
+        delete updateData[key];
+      }
+    });
+    console.log('📤 [Backend] Final updateData after removing empty strings:', updateData);
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },  // Use $set operator explicitly
+      {
+        new: true,
+        runValidators: true,
+        strict: false  // Allow fields not in schema (shouldn't be needed but helps debug)
+      }
+    )
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
@@ -250,7 +263,7 @@ router.put('/:id/personal', authMiddleware, async (req, res) => {
     const updateData = { ...req.body };
     delete updateData.password; // ⚠️ Never update password through this route
     delete updateData.username; // ⚠️ Never update username through this route
-    
+
     const updated = await User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },
@@ -267,7 +280,7 @@ router.put('/:id/employee', authMiddleware, async (req, res) => {
     const updateData = { ...req.body };
     delete updateData.password; // ⚠️ Never update password through this route
     delete updateData.username; // ⚠️ Never update username through this route
-    
+
     const updated = await User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },
