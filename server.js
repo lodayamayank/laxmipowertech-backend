@@ -12,6 +12,7 @@ import mapRoutes from './routes/map.routes.js';
 import rolesRoutes from './routes/roles.routes.js';
 import attendanceNotesRoutes from './routes/attendanceNotes.routes.js';
 import leaveRoutes from './routes/leaves.routes.js';
+import reimbursementRoutes from './routes/reimbursement.routes.js';
 dotenv.config();
 const app = express();
 
@@ -63,6 +64,7 @@ app.use('/api/map', mapRoutes);
 app.use('/api/roles', rolesRoutes);
 app.use('/api/attendanceNotes', attendanceNotesRoutes);
 app.use('/api/leaves', leaveRoutes);
+app.use('/api/reimbursements', reimbursementRoutes);
 // DB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
