@@ -69,7 +69,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
         lng: Number(lng),
         location,
         selfieUrl,
-        date: new Date() // if schema requires
+        date: new Date(), // if schema requires
       });
 
       await attendance.save();
