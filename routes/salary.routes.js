@@ -180,7 +180,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
     for (const user of users) {
       const attendanceSummary = await getAttendanceSummary(user._id, yearNum, monthNum);
       
-      // Calculate salary based on CTC and salary type
+      // Calculate salary based on CTC and salary typ
       let grossSalary = 0;
       let perDaySalary = 0;
 
