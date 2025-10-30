@@ -151,7 +151,104 @@ async function getAttendanceSummary(userId, year, month) {
   };
 }
 
-// GET /api/salary/calculate - Calculate salary for all users or filtered users
+// Helper function to calculate attendance summary from pre-loaded data
+function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const workingDays = getWorkingDaysInMonth(year, month);
+  
+  let presentDays = 0;
+  let absentDays = 0;
+  let halfDays = 0;
+  let paidLeaveDays = 0;
+  let unpaidLeaveDays = 0;
+  let sickLeaveDays = 0;
+  let casualLeaveDays = 0;
+  let weekOffs = 0;
+
+  // Create a map of dates for quick lookup
+  const attendanceByDate = {};
+  attendanceRecords.forEach(record => {
+    const dateKey = new Date(record.date).toISOString().split('T')[0];
+    if (!attendanceByDate[dateKey]) {
+      attendanceByDate[dateKey] = [];
+    }
+    attendanceByDate[dateKey].push(record);
+  });
+
+  
+  for (let day = 1; day <= daysInMonth; day++) {
+    const currentDate = new Date(year, month - 1, day);
+    const dateKey = currentDate.toISOString().split('T')[0];
+    const dayOfWeek = currentDate.getDay();
+
+    // Check if it's a Sunday (week off)
+    if (dayOfWeek === 0) {
+      weekOffs++;
+      continue;
+    }
+
+    const dayRecords = attendanceByDate[dateKey] || [];
+
+    // Check for leave
+    const isOnLeave = leaves.some(leave => {
+      const leaveStart = new Date(leave.startDate);
+      const leaveEnd = new Date(leave.endDate);
+      return currentDate >= leaveStart && currentDate <= leaveEnd;
+    });
+
+    if (isOnLeave) {
+      const leave = leaves.find(l => {
+        const leaveStart = new Date(l.startDate);
+        const leaveEnd = new Date(l.endDate);
+        return currentDate >= leaveStart && currentDate <= leaveEnd;
+      });
+      
+      if (leave.type === 'paid') paidLeaveDays++;
+      else if (leave.type === 'unpaid') unpaidLeaveDays++;
+      else if (leave.type === 'sick') sickLeaveDays++;
+      else if (leave.type === 'casual') casualLeaveDays++;
+      continue;
+    }
+
+    // Check attendance punches
+    const punchIns = dayRecords.filter(r => r.punchType === 'in');
+    const punchOuts = dayRecords.filter(r => r.punchType === 'out');
+
+    if (punchIns.length === 0 && punchOuts.length === 0) {
+      absentDays++;
+    } else if (punchIns.length > 0 && punchOuts.length > 0) {
+      // Calculate work duration
+      const firstIn = new Date(punchIns[0].createdAt);
+      const lastOut = new Date(punchOuts[punchOuts.length - 1].createdAt);
+      const duration = (lastOut - firstIn) / (1000 * 60); // minutes
+
+      if (duration >= 480) { // 8 hours
+        presentDays++;
+      } else if (duration >= 240) { // 4 hours
+        halfDays++;
+      } else {
+        absentDays++;
+      }
+    } else {
+      halfDays++;
+    }
+  }
+
+  return {
+    workingDays,
+    presentDays,
+    absentDays,
+    halfDays,
+    paidLeaveDays,
+    unpaidLeaveDays,
+    sickLeaveDays,
+    casualLeaveDays,
+    weekOffs,
+    totalDays: daysInMonth
+  };
+}
+
+// GET /api/salary/calculate - OPTIMIZED: Bulk-fetch version (3 queries instead of 44+)
 router.get('/calculate', authMiddleware, async (req, res) => {
   try {
     // Only admin can access salary data
@@ -175,12 +272,63 @@ router.get('/calculate', authMiddleware, async (req, res) => {
       .populate('assignedBranches', 'name')
       .lean();
 
+    if (users.length === 0) {
+      return res.json([]);
+    }
+
+    // 🚀 STEP 1: Fetch ALL attendance & leave data in bulk (2 queries)
+    const startDate = new Date(yearNum, monthNum - 1, 1);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59, 999);
+    const userIds = users.map(u => u._id);
+
+    const [allAttendance, allLeaves] = await Promise.all([
+      Attendance.find({
+        user: { $in: userIds },
+        date: { $gte: startDate, $lte: endDate }
+      }).populate('leaveId', 'type').lean(),
+      
+      Leave.find({
+        user: { $in: userIds },
+        status: 'approved',
+        $or: [
+          { startDate: { $gte: startDate, $lte: endDate } },
+          { endDate: { $gte: startDate, $lte: endDate } },
+          { $and: [{ startDate: { $lte: startDate } }, { endDate: { $gte: endDate } }] }
+        ]
+      }).lean()
+    ]);
+
+    // 🚀 STEP 2: Group by user for O(1) lookup
+    const attendanceByUser = {};
+    const leavesByUser = {};
+
+    allAttendance.forEach(record => {
+      const uid = record.user.toString();
+      if (!attendanceByUser[uid]) attendanceByUser[uid] = [];
+      attendanceByUser[uid].push(record);
+    });
+
+    allLeaves.forEach(leave => {
+      const uid = leave.user.toString();
+      if (!leavesByUser[uid]) leavesByUser[uid] = [];
+      leavesByUser[uid].push(leave);
+    });
+
     const salaryData = [];
 
+    // 🚀 STEP 3: Process each user WITHOUT database queries
     for (const user of users) {
-      const attendanceSummary = await getAttendanceSummary(user._id, yearNum, monthNum);
+      const uid = user._id.toString();
+      const userAttendance = attendanceByUser[uid] || [];
+      const userLeaves = leavesByUser[uid] || [];
       
-      // Calculate salary based on CTC and salary typ
+      // Calculate attendance from pre-loaded data
+      const attendanceSummary = calculateAttendanceFromData(
+        yearNum, monthNum, userAttendance, userLeaves
+      );
+      
+      // Calculate salary based on CTC and salary type
       let grossSalary = 0;
       let perDaySalary = 0;
 
@@ -191,7 +339,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
             perDaySalary = grossSalary / attendanceSummary.workingDays;
             break;
           case 'weekly':
-            grossSalary = (user.ctcAmount / 52) * 4.33; // Average weeks per month
+            grossSalary = (user.ctcAmount / 52) * 4.33;
             perDaySalary = grossSalary / attendanceSummary.workingDays;
             break;
           case 'daily':
