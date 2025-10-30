@@ -78,7 +78,7 @@ async function getAttendanceSummary(userId, year, month) {
     attendanceByDate[dateKey].push(record);
   });
 
-  // Process each day of the month
+  
   for (let day = 1; day <= daysInMonth; day++) {
     const currentDate = new Date(year, month - 1, day);
     const dateKey = currentDate.toISOString().split('T')[0];
