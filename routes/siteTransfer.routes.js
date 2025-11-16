@@ -1,0 +1,347 @@
+import express from 'express';
+import SiteTransfer from '../models/SiteTransfer.js';
+import UpcomingDelivery from '../models/UpcomingDelivery.js';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const router = express.Router();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Create uploads directory
+const uploadsDir = path.join(__dirname, '../uploads/siteTransfers');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '_' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|gif|webp|bmp/;
+  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+  const mimetype = allowedTypes.test(file.mimetype);
+  
+  if (extname && mimetype) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'), false);
+  }
+};
+
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
+
+// Generate unique siteTransferId
+const generateSiteTransferId = async () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const ymd = `${year}${month}${day}`;
+  
+  const suffix = Math.random().toString(36).slice(2, 7).toUpperCase();
+  const siteTransferId = `ST${ymd}-${suffix}`;
+  
+  const existing = await SiteTransfer.findOne({ siteTransferId });
+  if (existing) {
+    return generateSiteTransferId();
+  }
+  
+  return siteTransferId;
+};
+
+// Sync to UpcomingDelivery
+const syncToUpcomingDelivery = async (siteTransfer) => {
+  try {
+    const items = siteTransfer.materials.map(mat => ({
+      itemId: mat._id.toString(),
+      category: mat.itemName || '',
+      sub_category: '',
+      sub_category1: '',
+      st_quantity: mat.quantity || 0,
+      received_quantity: mat.received_quantity || 0,
+      is_received: mat.is_received || false
+    }));
+
+    const deliveryData = {
+      st_id: siteTransfer.siteTransferId,
+      transfer_number: siteTransfer.siteTransferId,
+      date: siteTransfer.requestDate,
+      from: siteTransfer.fromSite,
+      to: siteTransfer.toSite,
+      items: items,
+      status: 'Pending',
+      type: 'ST',
+      createdBy: siteTransfer.requestedBy
+    };
+
+    const existing = await UpcomingDelivery.findOne({ st_id: siteTransfer.siteTransferId });
+    
+    if (existing) {
+      await UpcomingDelivery.findByIdAndUpdate(existing._id, deliveryData);
+    } else {
+      await UpcomingDelivery.create(deliveryData);
+    }
+  } catch (err) {
+    console.error('Sync to UpcomingDelivery failed:', err.message);
+  }
+};
+
+// CREATE site transfer
+router.post('/', upload.array('attachments', 10), async (req, res) => {
+  try {
+    let materials = req.body.materials;
+    if (typeof materials === 'string') {
+      try {
+        materials = JSON.parse(materials);
+      } catch (e) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Invalid materials format' 
+        });
+      }
+    }
+    
+    const { fromSite, toSite, requestedBy, status } = req.body;
+    
+    if (!fromSite || !toSite || !requestedBy) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Missing required fields: fromSite, toSite, requestedBy' 
+      });
+    }
+
+    const siteTransferId = await generateSiteTransferId();
+    const attachments = req.files ? req.files.map(f => `/uploads/siteTransfers/${f.filename}`) : [];
+
+    const siteTransfer = new SiteTransfer({
+      siteTransferId,
+      fromSite,
+      toSite,
+      requestedBy,
+      materials: materials || [],
+      status: status || 'pending',
+      attachments,
+      requestDate: new Date()
+    });
+
+    await siteTransfer.save();
+    await syncToUpcomingDelivery(siteTransfer);
+
+    res.status(201).json({
+      success: true,
+      message: 'Site transfer created successfully',
+      data: siteTransfer
+    });
+  } catch (err) {
+    console.error('Create site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// GET all site transfers
+router.get('/', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const transfers = await SiteTransfer.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await SiteTransfer.countDocuments();
+
+    res.json({
+      success: true,
+      data: transfers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (err) {
+    console.error('Get site transfers error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch site transfers',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// GET site transfer by ID
+router.get('/:id', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+    res.json({ success: true, data: transfer });
+  } catch (err) {
+    console.error('Get site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// UPDATE site transfer
+router.put('/:id', upload.array('attachments', 10), async (req, res) => {
+  try {
+    let materials = req.body.materials;
+    if (typeof materials === 'string') {
+      materials = JSON.parse(materials);
+    }
+
+    const updateData = {
+      fromSite: req.body.fromSite,
+      toSite: req.body.toSite,
+      requestedBy: req.body.requestedBy,
+      materials: materials,
+      status: req.body.status
+    };
+
+    if (req.files && req.files.length > 0) {
+      const newAttachments = req.files.map(f => `/uploads/siteTransfers/${f.filename}`);
+      const existingTransfer = await SiteTransfer.findById(req.params.id);
+      updateData.attachments = [...(existingTransfer.attachments || []), ...newAttachments];
+    }
+
+    const transfer = await SiteTransfer.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    await syncToUpcomingDelivery(transfer);
+
+    res.json({
+      success: true,
+      message: 'Site transfer updated successfully',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Update site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// DELETE site transfer
+router.delete('/:id', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findByIdAndDelete(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    // Delete from UpcomingDelivery
+    await UpcomingDelivery.deleteOne({ st_id: transfer.siteTransferId });
+
+    // Delete attachments
+    if (transfer.attachments && transfer.attachments.length > 0) {
+      transfer.attachments.forEach(att => {
+        const filePath = path.join(__dirname, '..', att);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Site transfer deleted successfully'
+    });
+  } catch (err) {
+    console.error('Delete site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// DELETE attachment
+router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    const index = parseInt(req.params.attachmentIndex);
+    if (index < 0 || index >= transfer.attachments.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid attachment index'
+      });
+    }
+
+    const attachmentPath = transfer.attachments[index];
+    const filePath = path.join(__dirname, '..', attachmentPath);
+    
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    transfer.attachments.splice(index, 1);
+    await transfer.save();
+
+    res.json({
+      success: true,
+      message: 'Attachment deleted successfully',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Delete attachment error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete attachment',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+export default router;
