@@ -149,6 +149,9 @@ router.put('/:id/items', async (req, res) => {
       });
     }
 
+    // Store original status
+    const originalStatus = delivery.status;
+    
     // Update items
     items.forEach(updatedItem => {
       const itemIndex = delivery.items.findIndex(
@@ -161,10 +164,24 @@ router.put('/:id/items', async (req, res) => {
       }
     });
 
-    // ✅ Calculate status using sync service
-    const newStatus = calculateDeliveryStatus(delivery.items);
-    delivery.status = newStatus;
-    console.log(`📊 Status calculated: ${delivery.status}`);
+    // ✅ Only auto-calculate status if it becomes fully transferred
+    // Otherwise keep the manually set status
+    const calculatedStatus = calculateDeliveryStatus(delivery.items);
+    
+    // Only update status if:
+    // 1. All items are fully received (Transferred)
+    // 2. Or current status is Pending and some items are received (Partial)
+    if (calculatedStatus === 'Transferred') {
+      delivery.status = 'Transferred';
+      console.log(`📊 Status auto-updated to Transferred (all items received)`);
+    } else if (originalStatus === 'Pending' && calculatedStatus === 'Partial') {
+      delivery.status = 'Partial';
+      console.log(`📊 Status auto-updated to Partial (some items received)`);
+    } else {
+      // Keep original status (manually set by admin)
+      delivery.status = originalStatus;
+      console.log(`📊 Status kept as ${originalStatus} (manually set)`);
+    }
 
     await delivery.save();
 
@@ -176,11 +193,38 @@ router.put('/:id/items', async (req, res) => {
       });
       console.log(`🔄 Synced to SiteTransfer ${delivery.st_id}`);
     } else if (delivery.type === 'PO') {
-      await syncToPurchaseOrder(delivery.st_id, {
-        status: delivery.status,
-        items: delivery.items
-      });
-      console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
+      // Try to sync to Indent first (for photo-based POs)
+      try {
+        const Indent = (await import('../models/Indent.js')).default;
+        const indent = await Indent.findById(delivery.st_id);
+        if (indent) {
+          // Map UpcomingDelivery status back to Indent status
+          let indentStatus = 'pending';
+          if (delivery.status === 'Transferred') indentStatus = 'transferred';
+          else if (delivery.status === 'Partial') indentStatus = 'approved';
+          else if (delivery.status === 'Pending') indentStatus = 'pending';
+          else if (delivery.status === 'Cancelled') indentStatus = 'cancelled';
+          
+          indent.status = indentStatus;
+          await indent.save();
+          console.log(`🔄 Synced to Indent ${delivery.st_id}: ${delivery.status} → ${indentStatus}`);
+        } else {
+          // If not an Indent, try PurchaseOrder
+          await syncToPurchaseOrder(delivery.st_id, {
+            status: delivery.status,
+            items: delivery.items
+          });
+          console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
+        }
+      } catch (indentErr) {
+        console.log('⚠️ Trying PurchaseOrder sync:', indentErr.message);
+        // Try PurchaseOrder sync as fallback
+        await syncToPurchaseOrder(delivery.st_id, {
+          status: delivery.status,
+          items: delivery.items
+        });
+        console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
+      }
     }
 
     res.json({
@@ -314,6 +358,74 @@ router.delete('/:id', async (req, res) => {
       success: false,
       message: 'Failed to delete upcoming delivery',
       error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// ✅ TEST ENDPOINT - Check sync status for a specific PO/Transfer Number
+router.get('/test-sync/:transferNumber', protect, async (req, res) => {
+  try {
+    const { transferNumber } = req.params;
+    
+    // Find UpcomingDelivery
+    const delivery = await UpcomingDelivery.findOne({ transfer_number: transferNumber });
+    if (!delivery) {
+      return res.status(404).json({
+        success: false,
+        message: `No UpcomingDelivery found for ${transferNumber}`
+      });
+    }
+    
+    const result = {
+      transferNumber,
+      delivery: {
+        st_id: delivery.st_id,
+        status: delivery.status,
+        type: delivery.type,
+        from: delivery.from,
+        to: delivery.to
+      }
+    };
+    
+    // Try to find Indent
+    try {
+      const Indent = (await import('../models/Indent.js')).default;
+      const indent = await Indent.findById(delivery.st_id);
+      if (indent) {
+        result.indent = {
+          _id: indent._id,
+          indentId: indent.indentId,
+          status: indent.status,
+          requestedBy: indent.requestedBy
+        };
+      }
+    } catch (err) {
+      // Not an Indent, try PurchaseOrder
+      try {
+        const PurchaseOrder = (await import('../models/PurchaseOrder.js')).default;
+        const po = await PurchaseOrder.findOne({ purchaseOrderId: delivery.st_id });
+        if (po) {
+          result.purchaseOrder = {
+            _id: po._id,
+            purchaseOrderId: po.purchaseOrderId,
+            status: po.status,
+            requestedBy: po.requestedBy
+          };
+        }
+      } catch (poErr) {
+        result.error = 'No source document found';
+      }
+    }
+    
+    res.json({
+      success: true,
+      data: result
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'Test sync failed',
+      error: err.message
     });
   }
 });
