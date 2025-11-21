@@ -140,7 +140,8 @@ router.put("/:id/status", auth, async (req, res) => {
 
     // ✅ Sync status to UpcomingDelivery
     try {
-      const delivery = await UpcomingDelivery.findOne({ st_id: indent.indentId });
+      // Use indent._id to find the delivery (st_id stores the MongoDB _id)
+      const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
       if (delivery) {
         // Map indent status to delivery status
         let deliveryStatus = 'Pending';
@@ -151,7 +152,9 @@ router.put("/:id/status", auth, async (req, res) => {
         
         delivery.status = deliveryStatus;
         await delivery.save();
-        console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: ${deliveryStatus}`);
+        console.log(`🔄 Synced Indent ${indent.indentId} (${indent._id}) status to UpcomingDelivery: ${deliveryStatus}`);
+      } else {
+        console.log(`⚠️ No UpcomingDelivery found for Indent ${indent.indentId} (${indent._id})`);
       }
     } catch (syncErr) {
       console.error('⚠️ Failed to sync status to UpcomingDelivery:', syncErr.message);

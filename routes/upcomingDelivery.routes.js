@@ -202,56 +202,71 @@ router.put('/:id/items', async (req, res) => {
 router.put('/:id/status', protect, async (req, res) => {
   try {
     const { status } = req.body;
+    console.log(`📝 Status update request for delivery ${req.params.id}: ${status}`);
 
-    if (!['Pending', 'Partial', 'Transferred', 'pending', 'partial', 'transferred'].includes(status)) {
+    // Normalize status to proper case
+    const normalizedStatus = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+    
+    if (!['Pending', 'Partial', 'Transferred', 'Cancelled'].includes(normalizedStatus)) {
+      console.error(`❌ Invalid status: ${status}`);
       return res.status(400).json({
         success: false,
-        message: 'Invalid status. Must be: Pending, Partial, or Transferred'
+        message: 'Invalid status. Must be: Pending, Partial, Transferred, or Cancelled'
       });
     }
 
+    // Find and update delivery
     const delivery = await UpcomingDelivery.findByIdAndUpdate(
       req.params.id,
-      { status },
+      { status: normalizedStatus, updatedAt: Date.now() },
       { new: true, runValidators: true }
     );
 
     if (!delivery) {
+      console.error(`❌ Delivery not found: ${req.params.id}`);
       return res.status(404).json({
         success: false,
         message: 'Upcoming delivery not found'
       });
     }
 
+    console.log(`✅ Delivery status updated: ${delivery.st_id} → ${normalizedStatus}`);
+
     // ✅ Sync status back to source (Indent or PurchaseOrder)
     try {
       if (delivery.type === 'ST') {
         await syncToSiteTransfer(delivery.st_id, {
-          status: delivery.status
+          status: normalizedStatus
         });
         console.log(`🔄 Status synced to SiteTransfer ${delivery.st_id}`);
       } else if (delivery.type === 'PO') {
-        // Sync to PurchaseOrder
-        await syncToPurchaseOrder(delivery.st_id, {
-          status: delivery.status
-        });
-        console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
-        
-        // Also try to sync to Indent if it exists
+        // Try to sync to Indent first (for photo-based POs)
         try {
           const Indent = (await import('../models/Indent.js')).default;
           const indent = await Indent.findById(delivery.st_id);
           if (indent) {
-            indent.status = delivery.status.toLowerCase();
+            indent.status = normalizedStatus.toLowerCase();
             await indent.save();
-            console.log(`🔄 Status synced to Indent ${delivery.st_id}`);
+            console.log(`🔄 Status synced to Indent ${delivery.st_id}: ${normalizedStatus.toLowerCase()}`);
+          } else {
+            // If not an Indent, try PurchaseOrder
+            await syncToPurchaseOrder(delivery.st_id, {
+              status: normalizedStatus
+            });
+            console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
           }
         } catch (indentErr) {
-          console.log('No Indent found or error syncing:', indentErr.message);
+          console.log('⚠️ Trying PurchaseOrder sync:', indentErr.message);
+          // Try PurchaseOrder sync as fallback
+          await syncToPurchaseOrder(delivery.st_id, {
+            status: normalizedStatus
+          });
+          console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
         }
       }
     } catch (syncErr) {
       console.error('⚠️ Failed to sync status to source:', syncErr.message);
+      console.error(syncErr.stack);
       // Don't fail the request if sync fails
     }
 
@@ -262,6 +277,7 @@ router.put('/:id/status', protect, async (req, res) => {
     });
   } catch (err) {
     console.error('Update delivery status error:', err.message);
+    console.error(err.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to update delivery status',

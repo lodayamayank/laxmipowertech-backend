@@ -132,10 +132,16 @@ export const syncToPurchaseOrder = async (poId, updates, skipSync = false) => {
     let hasChanges = false;
     const updateData = {};
 
-    // Sync status
-    if (updates.status && updates.status !== mapToDeliveryStatus(purchaseOrder.status)) {
-      updateData.status = mapToSourceStatus(updates.status);
-      hasChanges = true;
+    // Sync status - ALWAYS sync if status is provided
+    if (updates.status) {
+      const mappedStatus = mapToSourceStatus(updates.status);
+      console.log(`🔄 Syncing PO status: ${updates.status} → ${mappedStatus} (current: ${purchaseOrder.status})`);
+      if (mappedStatus !== purchaseOrder.status) {
+        updateData.status = mappedStatus;
+        hasChanges = true;
+      } else {
+        console.log('ℹ️ Status unchanged, skipping update');
+      }
     }
 
     // Sync items if provided
