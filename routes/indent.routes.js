@@ -62,25 +62,52 @@ router.post("/", auth, async (req, res) => {
   }
 });
 
-// ✅ Get all indents (Admin side, with filters)
+// ✅ Get all indents (Admin side, with filters and pagination)
 router.get("/", auth, async (req, res) => {
   try {
-    const { status, project, requestedBy } = req.query;
+    const { status, project, requestedBy, page = 1, limit = 10, search = '' } = req.query;
     const filter = {};
+    
     if (status) filter.status = status;
     if (project) filter.project = project;
     if (requestedBy) filter.requestedBy = requestedBy;
+    
+    // Search by indentId
+    if (search) {
+      filter.indentId = { $regex: search, $options: 'i' };
+    }
 
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await Indent.countDocuments(filter);
+    
     const indents = await Indent.find(filter)
       .populate("project", "name")
       .populate("branch", "name")
-      .populate("requestedBy", "name role")
+      .populate("requestedBy", "name role email")
       .populate("approvedBy", "name role")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
 
-    res.json(indents);
+    console.log(`✅ Fetched ${indents.length} indents (page ${page}/${Math.ceil(total / limit)})`);
+
+    res.json({
+      success: true,
+      data: indents,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+        itemsPerPage: parseInt(limit)
+      }
+    });
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch indents", error: err.message });
+    console.error('❌ Error fetching indents:', err);
+    res.status(500).json({ 
+      success: false,
+      message: "Failed to fetch indents", 
+      error: err.message 
+    });
   }
 });
 
