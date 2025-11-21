@@ -62,15 +62,12 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-// CORS Configuration - FIXED FOR VERCEL
+// CORS Configuration
 const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://127.0.0.1:5173',
-  'https://laxmipowertech-frontend.onrender.com',
-  // Add all Vercel deployment URLs
-  'https://laxmi-power-tech-project.vercel.app',
-  'https://laxmi-power-tech-project-git-main-mayur-tanks-projects.vercel.app',
+  'https://laxmipowertech-frontend.onrender.com'
 ];
 
 app.use(cors({
@@ -82,26 +79,13 @@ app.use(cors({
     
     // Check if origin is in allowed list
     if (allowedOrigins.includes(origin)) {
-      console.log(`✅ CORS allowed for: ${origin}`);
-      return callback(null, true);
+      callback(null, true);
+    } else {
+      console.warn(`⚠️  CORS blocked origin: ${origin}`);
+      callback(new Error("Not allowed by CORS"));
     }
-    
-    // Allow all Vercel preview deployments (*.vercel.app)
-    if (origin.includes('vercel.app')) {
-      console.log(`✅ CORS allowed for Vercel deployment: ${origin}`);
-      return callback(null, true);
-    }
-    
-    // In production, log but allow (for debugging)
-    console.warn(`⚠️ CORS origin not in whitelist: ${origin}`);
-    // Allow anyway to prevent blocking
-    callback(null, true);
   },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['Content-Range', 'X-Content-Range'],
-  maxAge: 86400, // 24 hours
 }));
 
 // app.options('*', cors()); // Preflight support
