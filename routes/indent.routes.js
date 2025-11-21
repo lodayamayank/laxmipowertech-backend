@@ -147,6 +147,44 @@ router.get("/:id", auth, async (req, res) => {
   }
 });
 
+// ✅ DELETE INDENT
+router.delete("/:id", auth, async (req, res) => {
+  try {
+    const indent = await Indent.findById(req.params.id);
+    
+    if (!indent) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Indent not found' 
+      });
+    }
+
+    // Delete image file if exists
+    if (indent.imageUrl) {
+      const imagePath = path.join(__dirname, '..', indent.imageUrl);
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+        console.log('✅ Deleted image file:', imagePath);
+      }
+    }
+
+    await Indent.findByIdAndDelete(req.params.id);
+    console.log('✅ Deleted indent:', req.params.id);
+
+    res.json({ 
+      success: true,
+      message: 'Indent deleted successfully' 
+    });
+  } catch (err) {
+    console.error('❌ Delete indent error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to delete indent',
+      error: err.message 
+    });
+  }
+});
+
 // ✅ UPLOAD INDENT PHOTO - NEW ENDPOINT
 router.post("/upload-photo", upload.single('image'), async (req, res) => {
   try {
