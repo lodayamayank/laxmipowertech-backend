@@ -143,11 +143,12 @@ router.put("/:id/status", auth, async (req, res) => {
       // Use indent._id to find the delivery (st_id stores the MongoDB _id)
       const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
       if (delivery) {
-        // Map indent status to delivery status
+        // Map indent status to delivery status (valid: Pending, Partial, Transferred, Cancelled)
         let deliveryStatus = 'Pending';
         if (status === 'transferred') deliveryStatus = 'Transferred';
         else if (status === 'delivered') deliveryStatus = 'Transferred';
-        else if (status === 'approved') deliveryStatus = 'Pending';
+        else if (status === 'approved') deliveryStatus = 'Partial'; // ✅ CRITICAL FIX: Approved = Partial
+        else if (status === 'pending') deliveryStatus = 'Pending';
         else if (status === 'rejected' || status === 'cancelled') deliveryStatus = 'Cancelled';
         
         delivery.status = deliveryStatus;
@@ -336,11 +337,12 @@ router.post("/sync-all", auth, async (req, res) => {
       try {
         const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
         if (delivery) {
-          // Map indent status to delivery status
+          // Map indent status to delivery status (valid: Pending, Partial, Transferred, Cancelled)
           let deliveryStatus = 'Pending';
           if (indent.status === 'transferred') deliveryStatus = 'Transferred';
           else if (indent.status === 'delivered') deliveryStatus = 'Transferred';
-          else if (indent.status === 'approved') deliveryStatus = 'Pending';
+          else if (indent.status === 'approved') deliveryStatus = 'Partial'; // ✅ Approved = Partial
+          else if (indent.status === 'pending') deliveryStatus = 'Pending';
           else if (indent.status === 'rejected' || indent.status === 'cancelled') deliveryStatus = 'Cancelled';
           
           delivery.status = deliveryStatus;
