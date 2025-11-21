@@ -5,6 +5,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import auth from "../middleware/authMiddleware.js";
 import Indent from "../models/Indent.js";
+import UpcomingDelivery from "../models/UpcomingDelivery.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -115,8 +116,13 @@ router.get("/", auth, async (req, res) => {
 router.put("/:id/status", auth, async (req, res) => {
   try {
     const { status, adminRemarks } = req.body;
-    if (!["approved", "rejected", "delivered"].includes(status)) {
-      return res.status(400).json({ message: "Invalid status" });
+    // Allow all valid statuses: pending, approved, rejected, delivered, transferred, cancelled
+    const validStatuses = ["pending", "approved", "rejected", "delivered", "transferred", "cancelled"];
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Invalid status. Valid statuses are: " + validStatuses.join(", ") 
+      });
     }
 
     const indent = await Indent.findByIdAndUpdate(
@@ -125,9 +131,23 @@ router.put("/:id/status", auth, async (req, res) => {
       { new: true }
     );
 
-    res.json(indent);
+    if (!indent) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Indent not found" 
+      });
+    }
+
+    res.json({ 
+      success: true,
+      data: indent 
+    });
   } catch (err) {
-    res.status(400).json({ message: "Failed to update indent", error: err.message });
+    res.status(400).json({ 
+      success: false,
+      message: "Failed to update indent", 
+      error: err.message 
+    });
   }
 });
 
@@ -229,6 +249,27 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
 
     await indent.save();
     console.log('✅ Indent record created in database:', indent._id);
+
+    // ✅ CREATE UPCOMING DELIVERY ENTRY
+    try {
+      const upcomingDelivery = new UpcomingDelivery({
+        st_id: indent._id.toString(),
+        transfer_number: indentId,
+        date: new Date(),
+        from: 'Vendor', // Default for PO
+        to: req.body.project || 'Site', // Use project from form
+        items: [], // Empty items initially, can be populated later
+        status: 'Pending',
+        type: 'PO', // Purchase Order type
+        createdBy: uploadedBy || 'system'
+      });
+      
+      await upcomingDelivery.save();
+      console.log('✅ UpcomingDelivery created:', upcomingDelivery._id);
+    } catch (deliveryErr) {
+      console.error('⚠️ Failed to create UpcomingDelivery:', deliveryErr);
+      // Don't fail the whole request if upcoming delivery creation fails
+    }
 
     // Return success response
     res.status(200).json({
