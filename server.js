@@ -19,6 +19,7 @@ import rolesRoutes from './routes/roles.routes.js';
 import attendanceNotesRoutes from './routes/attendanceNotes.routes.js';
 import leaveRoutes from './routes/leaves.routes.js';
 import reimbursementRoutes from './routes/reimbursement.routes.js';
+import indentRoutes from './routes/indent.routes.js';
 
 // Material Management Routes
 import materialCatalogRoutes from './routes/materialCatalog.routes.js';
@@ -36,6 +37,7 @@ const uploadDirs = [
   path.join(__dirname, 'uploads'),
   path.join(__dirname, 'uploads/siteTransfers'),
   path.join(__dirname, 'uploads/purchaseOrders'),
+  path.join(__dirname, 'uploads/indents'),
   path.join(__dirname, 'tmp_uploads')
 ];
 
@@ -118,6 +120,7 @@ app.use('/api/roles', rolesRoutes);
 app.use('/api/attendanceNotes', attendanceNotesRoutes);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/reimbursements', reimbursementRoutes);
+app.use('/api/indents', indentRoutes);
 
 // Material Management Routes
 app.use('/api/material/catalog', materialCatalogRoutes);

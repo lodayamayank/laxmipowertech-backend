@@ -1,8 +1,49 @@
 import express from "express";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import auth from "../middleware/authMiddleware.js";
 import Indent from "../models/Indent.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const router = express.Router();
+
+// ✅ CREATE UPLOADS/INDENTS DIRECTORY
+const indentsUploadDir = path.join(__dirname, '..', 'uploads', 'indents');
+if (!fs.existsSync(indentsUploadDir)) {
+  fs.mkdirSync(indentsUploadDir, { recursive: true });
+  console.log('✅ Created directory:', indentsUploadDir);
+}
+
+// ✅ MULTER CONFIGURATION FOR INDENT PHOTO UPLOADS
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, indentsUploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'indent-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+    
+    if (mimetype && extname) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'));
+    }
+  }
+});
 
 // ✅ Create new indent (User raises request)
 router.post("/", auth, async (req, res) => {
@@ -76,6 +117,82 @@ router.get("/:id", auth, async (req, res) => {
     res.json(indent);
   } catch (err) {
     res.status(500).json({ message: "Failed to fetch indent", error: err.message });
+  }
+});
+
+// ✅ UPLOAD INDENT PHOTO - NEW ENDPOINT
+router.post("/upload-photo", upload.single('image'), async (req, res) => {
+  try {
+    console.log('📥 Upload photo request received');
+    console.log('📄 Body:', req.body);
+    console.log('📷 File:', req.file);
+
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'No image file uploaded' 
+      });
+    }
+
+    const { indentId, uploadedBy } = req.body;
+
+    if (!indentId) {
+      // Clean up uploaded file if validation fails
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ 
+        success: false,
+        message: 'Indent ID is required' 
+      });
+    }
+
+    // Generate file URL
+    const fileUrl = `/uploads/indents/${req.file.filename}`;
+
+    console.log('✅ File uploaded successfully');
+    console.log('🆔 Indent ID:', indentId);
+    console.log('📁 File path:', req.file.path);
+    console.log('🌐 File URL:', fileUrl);
+
+    // ✅ CREATE INDENT RECORD IN DATABASE
+    const indent = new Indent({
+      indentId: indentId,
+      imageUrl: fileUrl,
+      requestedBy: uploadedBy,
+      status: 'pending',
+      items: [] // Empty items array, will be populated later if needed
+    });
+
+    await indent.save();
+    console.log('✅ Indent record created in database:', indent._id);
+
+    // Return success response
+    res.status(200).json({
+      success: true,
+      message: 'Intent list uploaded successfully',
+      data: {
+        _id: indent._id,
+        indentId: indent.indentId,
+        imageUrl: indent.imageUrl,
+        filename: req.file.filename,
+        uploadedBy: indent.requestedBy,
+        status: indent.status,
+        createdAt: indent.createdAt
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Upload photo error:', err);
+    
+    // Clean up file if it was uploaded but processing failed
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to upload intent list',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 });
 

@@ -2,15 +2,22 @@ import mongoose from "mongoose";
 
 const IndentSchema = new mongoose.Schema(
   {
-    project: { type: mongoose.Schema.Types.ObjectId, ref: "Project", required: true },
-    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" }, // optional, if linked to branch
-    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    indentId: { 
+      type: String, 
+      unique: true, 
+      sparse: true, // Allows null values but enforces uniqueness when present
+      index: true 
+    },
+    imageUrl: { type: String }, // Path to uploaded intent list image
+    project: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
+    requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
 
     items: [
       {
-        name: { type: String, required: true },
-        quantity: { type: Number, required: true },
-        unit: { type: String, default: "pcs" }, // kg, pcs, bags, etc.
+        name: { type: String },
+        quantity: { type: Number },
+        unit: { type: String, default: "pcs" },
         remarks: { type: String },
       },
     ],
