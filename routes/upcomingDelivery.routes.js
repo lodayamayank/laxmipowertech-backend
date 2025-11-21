@@ -2,6 +2,7 @@ import express from 'express';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import SiteTransfer from '../models/SiteTransfer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
 
 const router = express.Router();
 
@@ -143,61 +144,26 @@ router.put('/:id/items', async (req, res) => {
       }
     });
 
-    // Auto-update status based on items
-    const allReceived = delivery.items.every(item => item.is_received);
-    const someReceived = delivery.items.some(item => item.is_received);
-    
-    if (allReceived) {
-      delivery.status = 'Transferred';
-    } else if (someReceived) {
-      delivery.status = 'Partial';
-    } else {
-      delivery.status = 'Pending';
-    }
+    // ✅ Calculate status using sync service
+    const newStatus = calculateDeliveryStatus(delivery.items);
+    delivery.status = newStatus;
+    console.log(`📊 Status calculated: ${delivery.status}`);
 
     await delivery.save();
 
-    // Sync back to source (SiteTransfer or PurchaseOrder)
+    // ✅ Sync back to source using sync service
     if (delivery.type === 'ST') {
-      const siteTransfer = await SiteTransfer.findOne({ siteTransferId: delivery.st_id });
-      if (siteTransfer) {
-        delivery.items.forEach(deliveryItem => {
-          const materialIndex = siteTransfer.materials.findIndex(
-            mat => mat._id.toString() === deliveryItem.itemId
-          );
-          if (materialIndex !== -1) {
-            siteTransfer.materials[materialIndex].received_quantity = deliveryItem.received_quantity;
-            siteTransfer.materials[materialIndex].is_received = deliveryItem.is_received;
-          }
-        });
-        
-        const allMaterialsReceived = siteTransfer.materials.every(mat => mat.is_received);
-        if (allMaterialsReceived) {
-          siteTransfer.status = 'transferred';
-        }
-        
-        await siteTransfer.save();
-      }
+      await syncToSiteTransfer(delivery.st_id, {
+        status: delivery.status,
+        items: delivery.items
+      });
+      console.log(`🔄 Synced to SiteTransfer ${delivery.st_id}`);
     } else if (delivery.type === 'PO') {
-      const purchaseOrder = await PurchaseOrder.findOne({ purchaseOrderId: delivery.st_id });
-      if (purchaseOrder) {
-        delivery.items.forEach(deliveryItem => {
-          const materialIndex = purchaseOrder.materials.findIndex(
-            mat => mat._id.toString() === deliveryItem.itemId
-          );
-          if (materialIndex !== -1) {
-            purchaseOrder.materials[materialIndex].received_quantity = deliveryItem.received_quantity;
-            purchaseOrder.materials[materialIndex].is_received = deliveryItem.is_received;
-          }
-        });
-        
-        const allMaterialsReceived = purchaseOrder.materials.every(mat => mat.is_received);
-        if (allMaterialsReceived) {
-          purchaseOrder.status = 'transferred';
-        }
-        
-        await purchaseOrder.save();
-      }
+      await syncToPurchaseOrder(delivery.st_id, {
+        status: delivery.status,
+        items: delivery.items
+      });
+      console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
     }
 
     res.json({

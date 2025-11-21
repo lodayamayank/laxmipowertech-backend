@@ -5,6 +5,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
@@ -245,7 +246,12 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       });
     }
 
-    await syncToUpcomingDelivery(transfer);
+    // ✅ Sync to UpcomingDelivery using sync service
+    await syncServiceToUpcomingDelivery(transfer.siteTransferId, {
+      status: transfer.status,
+      materials: transfer.materials
+    });
+    console.log(`🔄 Synced SiteTransfer ${transfer.siteTransferId} to UpcomingDelivery`);
 
     res.json({
       success: true,
@@ -273,8 +279,8 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
-    // Delete from UpcomingDelivery
-    await UpcomingDelivery.deleteOne({ st_id: transfer.siteTransferId });
+    // ✅ Delete from UpcomingDelivery using sync service
+    await deleteUpcomingDeliveryBySourceId(transfer.siteTransferId);
 
     // Delete attachments
     if (transfer.attachments && transfer.attachments.length > 0) {
