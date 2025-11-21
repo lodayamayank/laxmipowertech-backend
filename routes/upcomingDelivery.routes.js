@@ -3,25 +3,40 @@ import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import SiteTransfer from '../models/SiteTransfer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
+import protect from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// GET all upcoming deliveries
-router.get('/', async (req, res) => {
+// GET all upcoming deliveries (with user-based filtering)
+router.get('/', protect, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    const query = search ? {
-      $or: [
+    // Build base query
+    let query = {};
+
+    // ✅ ROLE-BASED FILTERING
+    // If user is client/user, show only their own deliveries
+    // If user is admin, show all deliveries
+    if (req.user.role !== 'admin') {
+      query.createdBy = req.user.id || req.user._id.toString();
+      console.log('👤 Client user - filtering by createdBy:', query.createdBy);
+    } else {
+      console.log('👑 Admin user - showing all deliveries');
+    }
+
+    // Add search filters
+    if (search) {
+      query.$or = [
         { transfer_number: { $regex: search, $options: 'i' } },
         { from: { $regex: search, $options: 'i' } },
         { to: { $regex: search, $options: 'i' } },
         { createdBy: { $regex: search, $options: 'i' } }
-      ]
-    } : {};
+      ];
+    }
 
     const deliveries = await UpcomingDelivery.find(query)
       .sort({ createdAt: -1 })
@@ -29,6 +44,8 @@ router.get('/', async (req, res) => {
       .limit(limit);
 
     const total = await UpcomingDelivery.countDocuments(query);
+
+    console.log(`📦 Found ${deliveries.length} deliveries for user ${req.user.email}`);
 
     res.json({
       success: true,
@@ -51,7 +68,7 @@ router.get('/', async (req, res) => {
 });
 
 // GET upcoming delivery by ID
-router.get('/:id', async (req, res) => {
+router.get('/:id', protect, async (req, res) => {
   try {
     const delivery = await UpcomingDelivery.findById(req.params.id);
     if (!delivery) {
@@ -72,7 +89,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // CREATE upcoming delivery (manual creation)
-router.post('/', async (req, res) => {
+router.post('/', protect, async (req, res) => {
   try {
     const { st_id, transfer_number, from, to, items, type, createdBy } = req.body;
 
