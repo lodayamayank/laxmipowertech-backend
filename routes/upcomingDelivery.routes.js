@@ -199,11 +199,11 @@ router.put('/:id/items', async (req, res) => {
 });
 
 // UPDATE delivery status (admin override)
-router.put('/:id/status', async (req, res) => {
+router.put('/:id/status', protect, async (req, res) => {
   try {
     const { status } = req.body;
 
-    if (!['Pending', 'Partial', 'Transferred'].includes(status)) {
+    if (!['Pending', 'Partial', 'Transferred', 'pending', 'partial', 'transferred'].includes(status)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid status. Must be: Pending, Partial, or Transferred'
@@ -221,6 +221,38 @@ router.put('/:id/status', async (req, res) => {
         success: false,
         message: 'Upcoming delivery not found'
       });
+    }
+
+    // ✅ Sync status back to source (Indent or PurchaseOrder)
+    try {
+      if (delivery.type === 'ST') {
+        await syncToSiteTransfer(delivery.st_id, {
+          status: delivery.status
+        });
+        console.log(`🔄 Status synced to SiteTransfer ${delivery.st_id}`);
+      } else if (delivery.type === 'PO') {
+        // Sync to PurchaseOrder
+        await syncToPurchaseOrder(delivery.st_id, {
+          status: delivery.status
+        });
+        console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
+        
+        // Also try to sync to Indent if it exists
+        try {
+          const Indent = (await import('../models/Indent.js')).default;
+          const indent = await Indent.findById(delivery.st_id);
+          if (indent) {
+            indent.status = delivery.status.toLowerCase();
+            await indent.save();
+            console.log(`🔄 Status synced to Indent ${delivery.st_id}`);
+          }
+        } catch (indentErr) {
+          console.log('No Indent found or error syncing:', indentErr.message);
+        }
+      }
+    } catch (syncErr) {
+      console.error('⚠️ Failed to sync status to source:', syncErr.message);
+      // Don't fail the request if sync fails
     }
 
     res.json({
