@@ -245,9 +245,16 @@ router.put('/:id/status', protect, async (req, res) => {
           const Indent = (await import('../models/Indent.js')).default;
           const indent = await Indent.findById(delivery.st_id);
           if (indent) {
-            indent.status = normalizedStatus.toLowerCase();
+            // Map UpcomingDelivery status back to Indent status
+            let indentStatus = 'pending';
+            if (normalizedStatus === 'Transferred') indentStatus = 'transferred';
+            else if (normalizedStatus === 'Partial') indentStatus = 'approved'; // Partial = Approved
+            else if (normalizedStatus === 'Pending') indentStatus = 'pending';
+            else if (normalizedStatus === 'Cancelled') indentStatus = 'cancelled';
+            
+            indent.status = indentStatus;
             await indent.save();
-            console.log(`🔄 Status synced to Indent ${delivery.st_id}: ${normalizedStatus.toLowerCase()}`);
+            console.log(`🔄 Status synced to Indent ${delivery.st_id}: ${normalizedStatus} → ${indentStatus}`);
           } else {
             // If not an Indent, try PurchaseOrder
             await syncToPurchaseOrder(delivery.st_id, {

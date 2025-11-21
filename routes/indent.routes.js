@@ -325,4 +325,48 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
   }
 });
 
+// ✅ MANUAL SYNC ENDPOINT (for debugging/testing)
+router.post("/sync-all", auth, async (req, res) => {
+  try {
+    const indents = await Indent.find({});
+    let synced = 0;
+    let failed = 0;
+    
+    for (const indent of indents) {
+      try {
+        const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
+        if (delivery) {
+          // Map indent status to delivery status
+          let deliveryStatus = 'Pending';
+          if (indent.status === 'transferred') deliveryStatus = 'Transferred';
+          else if (indent.status === 'delivered') deliveryStatus = 'Transferred';
+          else if (indent.status === 'approved') deliveryStatus = 'Pending';
+          else if (indent.status === 'rejected' || indent.status === 'cancelled') deliveryStatus = 'Cancelled';
+          
+          delivery.status = deliveryStatus;
+          await delivery.save();
+          synced++;
+          console.log(`✅ Synced ${indent.indentId}: ${indent.status} → ${deliveryStatus}`);
+        }
+      } catch (err) {
+        failed++;
+        console.error(`❌ Failed to sync ${indent.indentId}:`, err.message);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Synced ${synced} indents, ${failed} failed`,
+      synced,
+      failed
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: 'Sync failed',
+      error: err.message
+    });
+  }
+});
+
 export default router;
