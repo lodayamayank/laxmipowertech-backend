@@ -138,6 +138,26 @@ router.put("/:id/status", auth, async (req, res) => {
       });
     }
 
+    // ✅ Sync status to UpcomingDelivery
+    try {
+      const delivery = await UpcomingDelivery.findOne({ st_id: indent.indentId });
+      if (delivery) {
+        // Map indent status to delivery status
+        let deliveryStatus = 'Pending';
+        if (status === 'transferred') deliveryStatus = 'Transferred';
+        else if (status === 'delivered') deliveryStatus = 'Transferred';
+        else if (status === 'approved') deliveryStatus = 'Pending';
+        else if (status === 'rejected' || status === 'cancelled') deliveryStatus = 'Cancelled';
+        
+        delivery.status = deliveryStatus;
+        await delivery.save();
+        console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: ${deliveryStatus}`);
+      }
+    } catch (syncErr) {
+      console.error('⚠️ Failed to sync status to UpcomingDelivery:', syncErr.message);
+      // Don't fail the request if sync fails
+    }
+
     res.json({ 
       success: true,
       data: indent 
