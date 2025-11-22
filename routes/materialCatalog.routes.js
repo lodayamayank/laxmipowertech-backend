@@ -45,23 +45,60 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       rows.forEach(row => allRows.push({ ...row, sheetName }));
     });
     
-    const catalogDocs = allRows.map(row => ({
-      sheetName: row.sheetName,
-      rowIndex: row['SR NO.'] || 0,
-      srNo: row['SR NO.'] || '',
-      productCode: row['Product Code'] || '',
-      category: row['Category'] || '',
-      subCategory: row['Sub category'] || '',
-      subCategory1: row['Sub category 1'] || '',
-      photo: '',
-      raw: row
-    }));
+    console.log('📊 Excel Upload - Sample row keys:', allRows.length > 0 ? Object.keys(allRows[0]) : 'No data');
+    
+    // Helper function to get value from multiple possible column names
+    const getColumnValue = (row, possibleNames) => {
+      for (const name of possibleNames) {
+        if (row[name] !== undefined && row[name] !== null && row[name] !== '') {
+          return String(row[name]).trim();
+        }
+      }
+      return '';
+    };
+    
+    const catalogDocs = allRows.map((row, index) => {
+      // Try multiple column name variations
+      const srNo = getColumnValue(row, ['SR NO.', 'SR NO', 'srno', 'sr no', 'Sr No', 'Sr no']);
+      const productCode = getColumnValue(row, ['Product Code', 'product code', 'productcode', 'ProductCode']);
+      const category = getColumnValue(row, ['Category', 'category', 'CATEGORY']);
+      const subCategory = getColumnValue(row, ['Sub category', 'sub category', 'subcategory', 'SubCategory', 'Sub Category']);
+      const subCategory1 = getColumnValue(row, ['Sub category 1', 'sub category 1', 'subcategory 1', 'SubCategory1', 'Sub Category 1', 'subcategory1']);
+      
+      // Log first row for debugging
+      if (index === 0) {
+        console.log('📊 First row mapping:');
+        console.log('  srNo:', srNo);
+        console.log('  category:', category);
+        console.log('  subCategory:', subCategory);
+        console.log('  subCategory1:', subCategory1);
+      }
+      
+      return {
+        sheetName: row.sheetName,
+        rowIndex: srNo || index,
+        srNo,
+        productCode,
+        category,
+        subCategory,
+        subCategory1,
+        photo: '',
+        raw: row
+      };
+    });
 
+    // 🔥 DELETE ALL OLD DATA BEFORE INSERTING NEW DATA
+    const deleteResult = await MaterialCatalog.deleteMany({});
+    console.log(`🗑️  Deleted ${deleteResult.deletedCount} old material records`);
+
+    // Insert new data
     await MaterialCatalog.insertMany(catalogDocs);
+    console.log(`✅ Inserted ${catalogDocs.length} new material records`);
 
     res.status(200).json({ 
       message: 'Excel uploaded successfully', 
       count: catalogDocs.length,
+      deletedCount: deleteResult.deletedCount,
       filename: path.basename(targetPath)
     });
   } catch (err) {
