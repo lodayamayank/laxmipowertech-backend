@@ -78,11 +78,21 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
-    const flattened = materials.map(doc => ({
-      sheetName: doc.sheetName,
-      ...doc.raw
+    
+    // Format data to match demonstrated project - return with properly named fields
+    const result = materials.map(item => ({
+      _id: item._id,
+      sheetName: item.sheetName,
+      category: item.category || item.raw["Category"] || "",
+      subCategory: item.subCategory || item.raw["Sub category"] || "",
+      subCategory1: item.subCategory1 || item.raw["Sub category 1"] || "",
+      srNo: item.srNo || item.raw["SR NO."] || "",
+      productCode: item.productCode || item.raw["Product Code"] || "",
+      photo: item.photo || "",
+      raw: item.raw // Keep raw data for reference
     }));
-    res.status(200).json(flattened);
+    
+    res.status(200).json(result);
   } catch (err) {
     console.error('Get materials error:', err.message);
     res.status(500).json({ 
