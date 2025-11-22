@@ -45,60 +45,23 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       rows.forEach(row => allRows.push({ ...row, sheetName }));
     });
     
-    console.log('📊 Excel Upload - Sample row keys:', allRows.length > 0 ? Object.keys(allRows[0]) : 'No data');
-    
-    // Helper function to get value from multiple possible column names
-    const getColumnValue = (row, possibleNames) => {
-      for (const name of possibleNames) {
-        if (row[name] !== undefined && row[name] !== null && row[name] !== '') {
-          return String(row[name]).trim();
-        }
-      }
-      return '';
-    };
-    
-    const catalogDocs = allRows.map((row, index) => {
-      // Try multiple column name variations
-      const srNo = getColumnValue(row, ['SR NO.', 'SR NO', 'srno', 'sr no', 'Sr No', 'Sr no']);
-      const productCode = getColumnValue(row, ['Product Code', 'product code', 'productcode', 'ProductCode']);
-      const category = getColumnValue(row, ['Category', 'category', 'CATEGORY']);
-      const subCategory = getColumnValue(row, ['Sub category', 'sub category', 'subcategory', 'SubCategory', 'Sub Category']);
-      const subCategory1 = getColumnValue(row, ['Sub category 1', 'sub category 1', 'subcategory 1', 'SubCategory1', 'Sub Category 1', 'subcategory1']);
-      
-      // Log first row for debugging
-      if (index === 0) {
-        console.log('📊 First row mapping:');
-        console.log('  srNo:', srNo);
-        console.log('  category:', category);
-        console.log('  subCategory:', subCategory);
-        console.log('  subCategory1:', subCategory1);
-      }
-      
-      return {
-        sheetName: row.sheetName,
-        rowIndex: srNo || index,
-        srNo,
-        productCode,
-        category,
-        subCategory,
-        subCategory1,
-        photo: '',
-        raw: row
-      };
-    });
+    const catalogDocs = allRows.map(row => ({
+      sheetName: row.sheetName,
+      rowIndex: row['SR NO.'] || 0,
+      srNo: row['SR NO.'] || '',
+      productCode: row['Product Code'] || '',
+      category: row['Category'] || '',
+      subCategory: row['Sub category'] || '',
+      subCategory1: row['Sub category 1'] || '',
+      photo: '',
+      raw: row
+    }));
 
-    // 🔥 DELETE ALL OLD DATA BEFORE INSERTING NEW DATA
-    const deleteResult = await MaterialCatalog.deleteMany({});
-    console.log(`🗑️  Deleted ${deleteResult.deletedCount} old material records`);
-
-    // Insert new data
     await MaterialCatalog.insertMany(catalogDocs);
-    console.log(`✅ Inserted ${catalogDocs.length} new material records`);
 
     res.status(200).json({ 
       message: 'Excel uploaded successfully', 
       count: catalogDocs.length,
-      deletedCount: deleteResult.deletedCount,
       filename: path.basename(targetPath)
     });
   } catch (err) {
@@ -115,40 +78,11 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
-    
-    // Format data to match demonstrated project - return with properly named fields
-    // IMPORTANT: Check for non-empty strings, not just truthy values
-    const result = materials.map(item => {
-      const category = (item.category && item.category.trim()) || (item.raw && item.raw["Category"]) || "";
-      const subCategory = (item.subCategory && item.subCategory.trim()) || (item.raw && item.raw["Sub category"]) || "";
-      const subCategory1 = (item.subCategory1 && item.subCategory1.trim()) || (item.raw && item.raw["Sub category 1"]) || "";
-      
-      // Debug log for first item to verify transformation
-      if (materials.indexOf(item) === 0) {
-        console.log('📊 Sample material transformation:');
-        console.log('  DB category:', JSON.stringify(item.category));
-        console.log('  Raw category:', item.raw ? JSON.stringify(item.raw["Category"]) : 'N/A');
-        console.log('  Final category:', JSON.stringify(category));
-        console.log('  DB subCategory:', JSON.stringify(item.subCategory));
-        console.log('  Raw subCategory:', item.raw ? JSON.stringify(item.raw["Sub category"]) : 'N/A');
-        console.log('  Final subCategory:', JSON.stringify(subCategory));
-      }
-      
-      return {
-        _id: item._id,
-        sheetName: item.sheetName,
-        category,
-        subCategory,
-        subCategory1,
-        srNo: (item.srNo && item.srNo.trim()) || (item.raw && item.raw["SR NO."]) || "",
-        productCode: (item.productCode && item.productCode.trim()) || (item.raw && item.raw["Product Code"]) || "",
-        photo: item.photo || "",
-        raw: item.raw // Keep raw data for reference
-      };
-    });
-    
-    console.log(`✅ Returning ${result.length} materials from /material/catalog`);
-    res.status(200).json(result);
+    const flattened = materials.map(doc => ({
+      sheetName: doc.sheetName,
+      ...doc.raw
+    }));
+    res.status(200).json(flattened);
   } catch (err) {
     console.error('Get materials error:', err.message);
     res.status(500).json({ 
@@ -195,22 +129,14 @@ router.get('/materials', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
 
-    // IMPORTANT: Check for non-empty strings, not just truthy values
-    const result = materials.map(item => {
-      const category = (item.category && item.category.trim()) || (item.raw && item.raw["Category"]) || "Unnamed Category";
-      const subCategory = (item.subCategory && item.subCategory.trim()) || (item.raw && item.raw["Sub category"]) || "—";
-      const subCategory1 = (item.subCategory1 && item.subCategory1.trim()) || (item.raw && item.raw["Sub category 1"]) || "—";
-      
-      return {
-        _id: item._id,
-        category,
-        subCategory,
-        subCategory1,
-        photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
-      };
-    });
+    const result = materials.map(item => ({
+      _id: item._id,
+      category: item.category || item.raw["Category"] || "Unnamed Category",
+      subCategory: item.subCategory || item.raw["Sub category"] || "—",
+      subCategory1: item.subCategory1 || item.raw["Sub category 1"] || "—",
+      photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
+    }));
 
-    console.log(`✅ Returning ${result.length} materials from /material/catalog/materials`);
     res.status(200).json(result);
   } catch (err) {
     console.error('Get materials error:', err.message);
