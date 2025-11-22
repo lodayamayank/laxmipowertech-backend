@@ -24,7 +24,7 @@ const upload = multer({
   }
 });
 
-// Upload Excel + save to MongoDB
+// Upload Excel + save to MongoDB (MATCHES DEMONSTRATED PROJECT)
 router.post('/upload', upload.single('file'), async (req, res) => {
   try {
     const file = req.file;
@@ -45,19 +45,51 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       rows.forEach(row => allRows.push({ ...row, sheetName }));
     });
     
-    const catalogDocs = allRows.map(row => ({
-      sheetName: row.sheetName,
-      rowIndex: row['SR NO.'] || 0,
-      srNo: row['SR NO.'] || '',
-      productCode: row['Product Code'] || '',
-      category: row['Category'] || '',
-      subCategory: row['Sub category'] || '',
-      subCategory1: row['Sub category 1'] || '',
-      photo: '',
-      raw: row
-    }));
+    console.log('📊 Excel Upload - Sample row keys:', allRows.length > 0 ? Object.keys(allRows[0]) : 'No data');
+    
+    // Helper function to get value from multiple possible column names
+    const getColumnValue = (row, possibleNames) => {
+      for (const name of possibleNames) {
+        const value = row[name];
+        if (value !== undefined && value !== null && value !== '') {
+          return String(value).trim();
+        }
+      }
+      return '';
+    };
+    
+    const catalogDocs = allRows.map((row, index) => {
+      // Try multiple column name variations (handles lowercase, uppercase, spaces)
+      const srNo = getColumnValue(row, ['SR NO.', 'SR NO', 'srno', 'sr no', 'Sr No', 'Sr no']);
+      const productCode = getColumnValue(row, ['Product Code', 'product code', 'productcode', 'ProductCode']);
+      const category = getColumnValue(row, ['Category', 'category', 'CATEGORY']);
+      const subCategory = getColumnValue(row, ['Sub category', 'sub category', 'subcategory', 'SubCategory', 'Sub Category']);
+      const subCategory1 = getColumnValue(row, ['Sub category 1', 'sub category 1', 'subcategory 1', 'SubCategory1', 'Sub Category 1', 'subcategory1']);
+      
+      // Log first row for debugging
+      if (index === 0) {
+        console.log('📊 First row mapping:');
+        console.log('  srNo:', srNo);
+        console.log('  category:', category);
+        console.log('  subCategory:', subCategory);
+        console.log('  subCategory1:', subCategory1);
+      }
+      
+      return {
+        sheetName: row.sheetName,
+        rowIndex: srNo || index,
+        srNo,
+        productCode,
+        category,
+        subCategory,
+        subCategory1,
+        photo: '',
+        raw: row
+      };
+    });
 
     await MaterialCatalog.insertMany(catalogDocs);
+    console.log(`✅ Inserted ${catalogDocs.length} new material records`);
 
     res.status(200).json({ 
       message: 'Excel uploaded successfully', 
@@ -124,11 +156,12 @@ router.get('/last', async (req, res) => {
   }
 });
 
-// Get all materials for dropdown/selection
+// Get all materials for dropdown/selection (MATCHES DEMONSTRATED PROJECT)
 router.get('/materials', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
 
+    // EXACT LOGIC FROM DEMONSTRATED PROJECT
     const result = materials.map(item => ({
       _id: item._id,
       category: item.category || item.raw["Category"] || "Unnamed Category",
@@ -137,6 +170,7 @@ router.get('/materials', async (req, res) => {
       photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
     }));
 
+    console.log(`✅ Returning ${result.length} materials from /material/catalog/materials`);
     res.status(200).json(result);
   } catch (err) {
     console.error('Get materials error:', err.message);
