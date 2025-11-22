@@ -80,18 +80,37 @@ router.get('/', async (req, res) => {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
     
     // Format data to match demonstrated project - return with properly named fields
-    const result = materials.map(item => ({
-      _id: item._id,
-      sheetName: item.sheetName,
-      category: item.category || item.raw["Category"] || "",
-      subCategory: item.subCategory || item.raw["Sub category"] || "",
-      subCategory1: item.subCategory1 || item.raw["Sub category 1"] || "",
-      srNo: item.srNo || item.raw["SR NO."] || "",
-      productCode: item.productCode || item.raw["Product Code"] || "",
-      photo: item.photo || "",
-      raw: item.raw // Keep raw data for reference
-    }));
+    // IMPORTANT: Check for non-empty strings, not just truthy values
+    const result = materials.map(item => {
+      const category = (item.category && item.category.trim()) || (item.raw && item.raw["Category"]) || "";
+      const subCategory = (item.subCategory && item.subCategory.trim()) || (item.raw && item.raw["Sub category"]) || "";
+      const subCategory1 = (item.subCategory1 && item.subCategory1.trim()) || (item.raw && item.raw["Sub category 1"]) || "";
+      
+      // Debug log for first item to verify transformation
+      if (materials.indexOf(item) === 0) {
+        console.log('📊 Sample material transformation:');
+        console.log('  DB category:', JSON.stringify(item.category));
+        console.log('  Raw category:', item.raw ? JSON.stringify(item.raw["Category"]) : 'N/A');
+        console.log('  Final category:', JSON.stringify(category));
+        console.log('  DB subCategory:', JSON.stringify(item.subCategory));
+        console.log('  Raw subCategory:', item.raw ? JSON.stringify(item.raw["Sub category"]) : 'N/A');
+        console.log('  Final subCategory:', JSON.stringify(subCategory));
+      }
+      
+      return {
+        _id: item._id,
+        sheetName: item.sheetName,
+        category,
+        subCategory,
+        subCategory1,
+        srNo: (item.srNo && item.srNo.trim()) || (item.raw && item.raw["SR NO."]) || "",
+        productCode: (item.productCode && item.productCode.trim()) || (item.raw && item.raw["Product Code"]) || "",
+        photo: item.photo || "",
+        raw: item.raw // Keep raw data for reference
+      };
+    });
     
+    console.log(`✅ Returning ${result.length} materials from /material/catalog`);
     res.status(200).json(result);
   } catch (err) {
     console.error('Get materials error:', err.message);
@@ -139,14 +158,22 @@ router.get('/materials', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
 
-    const result = materials.map(item => ({
-      _id: item._id,
-      category: item.category || item.raw["Category"] || "Unnamed Category",
-      subCategory: item.subCategory || item.raw["Sub category"] || "—",
-      subCategory1: item.subCategory1 || item.raw["Sub category 1"] || "—",
-      photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
-    }));
+    // IMPORTANT: Check for non-empty strings, not just truthy values
+    const result = materials.map(item => {
+      const category = (item.category && item.category.trim()) || (item.raw && item.raw["Category"]) || "Unnamed Category";
+      const subCategory = (item.subCategory && item.subCategory.trim()) || (item.raw && item.raw["Sub category"]) || "—";
+      const subCategory1 = (item.subCategory1 && item.subCategory1.trim()) || (item.raw && item.raw["Sub category 1"]) || "—";
+      
+      return {
+        _id: item._id,
+        category,
+        subCategory,
+        subCategory1,
+        photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
+      };
+    });
 
+    console.log(`✅ Returning ${result.length} materials from /material/catalog/materials`);
     res.status(200).json(result);
   } catch (err) {
     console.error('Get materials error:', err.message);
