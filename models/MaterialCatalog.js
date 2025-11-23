@@ -8,6 +8,7 @@ const materialCatalogSchema = new mongoose.Schema({
   category: { type: String },
   subCategory: { type: String },
   subCategory1: { type: String },
+  subCategory2: { type: String },  // New field for SubCategory2
   photo: { type: String },
   raw: { type: mongoose.Schema.Types.Mixed }
 }, { timestamps: true });

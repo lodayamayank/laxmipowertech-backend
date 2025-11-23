@@ -60,19 +60,22 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     
     const catalogDocs = allRows.map((row, index) => {
       // Try multiple column name variations (handles lowercase, uppercase, spaces)
-      const srNo = getColumnValue(row, ['SR NO.', 'SR NO', 'srno', 'sr no', 'Sr No', 'Sr no']);
+      const srNo = getColumnValue(row, ['SR NO.', 'SR NO', 'srno', 'sr no', 'Sr No', 'Sr no', 'SRNO']);
       const productCode = getColumnValue(row, ['Product Code', 'product code', 'productcode', 'ProductCode']);
       const category = getColumnValue(row, ['Category', 'category', 'CATEGORY']);
       const subCategory = getColumnValue(row, ['Sub category', 'sub category', 'subcategory', 'SubCategory', 'Sub Category']);
       const subCategory1 = getColumnValue(row, ['Sub category 1', 'sub category 1', 'subcategory 1', 'SubCategory1', 'Sub Category 1', 'subcategory1']);
+      const subCategory2 = getColumnValue(row, ['Sub category 2', 'sub category 2', 'subcategory 2', 'SubCategory2', 'Sub Category 2', 'subcategory2']);
       
       // Log first row for debugging
       if (index === 0) {
         console.log('📊 First row mapping:');
         console.log('  srNo:', srNo);
+        console.log('  productCode:', productCode);
         console.log('  category:', category);
         console.log('  subCategory:', subCategory);
         console.log('  subCategory1:', subCategory1);
+        console.log('  subCategory2:', subCategory2);
       }
       
       return {
@@ -83,6 +86,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         category,
         subCategory,
         subCategory1,
+        subCategory2,
         photo: '',
         raw: row
       };
@@ -161,12 +165,13 @@ router.get('/materials', async (req, res) => {
   try {
     const materials = await MaterialCatalog.find().sort({ createdAt: -1 });
 
-    // EXACT LOGIC FROM DEMONSTRATED PROJECT
+    // EXACT LOGIC FROM DEMONSTRATED PROJECT + SubCategory2
     const result = materials.map(item => ({
       _id: item._id,
       category: item.category || item.raw["Category"] || "Unnamed Category",
       subCategory: item.subCategory || item.raw["Sub category"] || "—",
       subCategory1: item.subCategory1 || item.raw["Sub category 1"] || "—",
+      subCategory2: item.subCategory2 || item.raw["Sub category 2"] || "—",
       photo: item.photo || "https://cdn-icons-png.flaticon.com/512/2910/2910768.png",
     }));
 
