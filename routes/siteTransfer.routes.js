@@ -259,11 +259,17 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       status: req.body.status
     };
 
+    const attachments = [];
     if (req.files && req.files.length > 0) {
-      const newAttachments = req.files.map(f => `/uploads/siteTransfers/${f.filename}`);
-      const existingTransfer = await SiteTransfer.findById(req.params.id);
-      updateData.attachments = [...(existingTransfer.attachments || []), ...newAttachments];
+      // Use absolute URLs with backend domain for images
+      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+      req.files.forEach(file => {
+        attachments.push(`${baseURL}/uploads/siteTransfers/${file.filename}`);
+      });
     }
+
+    const existingTransfer = await SiteTransfer.findById(req.params.id);
+    updateData.attachments = [...(existingTransfer.attachments || []), ...attachments];
 
     const transfer = await SiteTransfer.findByIdAndUpdate(
       req.params.id,

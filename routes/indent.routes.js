@@ -372,8 +372,9 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
       });
     }
 
-    // Generate file URL
-    const fileUrl = `/uploads/indents/${req.file.filename}`;
+    // ✅ Generate absolute file URL with backend domain
+    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+    const fileUrl = `${baseURL}/uploads/indents/${req.file.filename}`;
 
     console.log('✅ File uploaded successfully');
     console.log('🆔 Indent ID:', indentId);
