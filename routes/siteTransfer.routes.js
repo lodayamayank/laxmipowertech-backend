@@ -287,12 +287,9 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       });
     }
 
-    // ✅ Sync to UpcomingDelivery using sync service
-    await syncServiceToUpcomingDelivery(transfer.siteTransferId, {
-      status: transfer.status,
-      materials: transfer.materials
-    });
-    console.log(`🔄 Synced SiteTransfer ${transfer.siteTransferId} to UpcomingDelivery`);
+    // ✅ Sync to UpcomingDelivery - Use local function for FULL sync (including quantity changes)
+    await syncToUpcomingDelivery(transfer);
+    console.log(`🔄 Synced SiteTransfer ${transfer.siteTransferId} to UpcomingDelivery (FULL SYNC)`);
 
     res.json({
       success: true,

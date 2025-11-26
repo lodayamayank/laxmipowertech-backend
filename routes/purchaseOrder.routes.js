@@ -292,12 +292,9 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       });
     }
 
-    // ✅ Sync to UpcomingDelivery using sync service
-    await syncServiceToUpcomingDelivery(order.purchaseOrderId, {
-      status: order.status,
-      materials: order.materials
-    });
-    console.log(`🔄 Synced PurchaseOrder ${order.purchaseOrderId} to UpcomingDelivery`);
+    // ✅ Sync to UpcomingDelivery - Use local function for FULL sync (including quantity changes)
+    await syncToUpcomingDelivery(order);
+    console.log(`🔄 Synced PurchaseOrder ${order.purchaseOrderId} to UpcomingDelivery (FULL SYNC)`);
 
     res.json({
       success: true,

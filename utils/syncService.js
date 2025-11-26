@@ -202,13 +202,20 @@ export const syncToUpcomingDelivery = async (sourceId, updates, skipSync = false
       }
     }
 
-    // Sync materials to items
+    // Sync materials to items - UPDATE ALL FIELDS INCLUDING QUANTITY
     if (updates.materials && Array.isArray(updates.materials)) {
       const updatedItems = delivery.items.map((item) => {
         const material = updates.materials.find(m => m._id.toString() === item.itemId);
         if (material) {
           return {
             ...item.toObject(),
+            // ✅ CRITICAL FIX: Update st_quantity when material quantity changes
+            st_quantity: material.quantity || item.st_quantity,
+            // ✅ Update category fields if they changed
+            category: material.category || item.category,
+            sub_category: material.subCategory || item.sub_category,
+            sub_category1: material.subCategory1 || item.sub_category1,
+            // Keep received quantities (only updated via GRN)
             received_quantity: material.received_quantity || item.received_quantity || 0,
             is_received: material.is_received || item.is_received || false
           };

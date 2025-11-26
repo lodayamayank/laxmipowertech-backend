@@ -269,11 +269,13 @@ router.delete('/all', auth, async (req, res) => {
       success: false,
       message: 'Failed to delete all indents',
       error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
 });
 
 // ✅ Get single indent details
 router.get("/:id", auth, async (req, res) => {
-try {
+  try {
   const indent = await Indent.findById(req.params.id)
     .populate("project", "name")
     .populate("branch", "name")
@@ -293,22 +295,18 @@ try {
     data: indent 
   });
 } catch (err) {
-  console.error('❌ Get indent error:', err);
-  res.status(500).json({ 
-    success: false,
-    message: "Failed to fetch indent", 
-    error: err.message 
-  });
-}
+    console.error('❌ Get indent error:', err);
+    res.status(500).json({ 
+      success: false,
+      message: "Failed to fetch indent", 
+      error: err.message 
+    });
+  }
 });
 
 // ✅ DELETE INDENT
 router.delete("/:id", auth, async (req, res) => {
-try {
-  const indent = await Indent.findById(req.params.id);
-  
-  if (!indent) {
-    return res.status(404).json({ 
+  try {
     const indent = await Indent.findById(req.params.id);
     
     if (!indent) {
