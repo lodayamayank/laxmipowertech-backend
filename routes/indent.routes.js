@@ -371,4 +371,35 @@ router.post("/sync-all", auth, async (req, res) => {
   }
 });
 
+// DELETE ALL indents
+router.delete('/all', async (req, res) => {
+  try {
+    // Get all indent IDs before deletion
+    const indents = await Indent.find({}, '_id');
+    const indentIds = indents.map(indent => indent._id.toString());
+    
+    // Delete all associated upcoming deliveries
+    await UpcomingDelivery.deleteMany({
+      source_id: { $in: indentIds },
+      type: 'Indent'
+    });
+    
+    // Delete all indents
+    const result = await Indent.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} indents and their associated upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all indents error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all indents',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 export default router;

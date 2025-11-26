@@ -359,4 +359,35 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
   }
 });
 
+// DELETE ALL purchase orders
+router.delete('/all', async (req, res) => {
+  try {
+    // Get all purchase order IDs before deletion
+    const purchaseOrders = await PurchaseOrder.find({}, '_id');
+    const poIds = purchaseOrders.map(po => po._id.toString());
+    
+    // Delete all associated upcoming deliveries
+    await UpcomingDelivery.deleteMany({
+      source_id: { $in: poIds },
+      type: 'PO'
+    });
+    
+    // Delete all purchase orders
+    const result = await PurchaseOrder.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} purchase orders and their associated upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all purchase orders error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all purchase orders',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 export default router;
