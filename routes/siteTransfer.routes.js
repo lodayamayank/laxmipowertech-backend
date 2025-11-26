@@ -125,7 +125,10 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     }
 
     const siteTransferId = await generateSiteTransferId();
-    const attachments = req.files ? req.files.map(f => `/uploads/siteTransfers/${f.filename}`) : [];
+    
+    // ✅ Use absolute URLs with backend domain for images
+    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+    const attachments = req.files ? req.files.map(f => `${baseURL}/uploads/siteTransfers/${f.filename}`) : [];
 
     const siteTransfer = new SiteTransfer({
       siteTransferId,
