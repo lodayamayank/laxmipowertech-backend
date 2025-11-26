@@ -175,6 +175,38 @@ router.put("/:id/status", auth, async (req, res) => {
   }
 });
 
+// ✅ DELETE ALL indents - MUST BE BEFORE /:id route
+router.delete('/all', auth, async (req, res) => {
+  try {
+    // Get all indent IDs before deletion
+    const indents = await Indent.find({}, '_id');
+    const indentIds = indents.map(indent => indent._id.toString());
+    
+    // Delete all associated upcoming deliveries (using st_id which stores the indent _id)
+    const deliveryResult = await UpcomingDelivery.deleteMany({
+      st_id: { $in: indentIds }
+    });
+    
+    console.log(`🗑️ Deleted ${deliveryResult.deletedCount} associated upcoming deliveries`);
+    
+    // Delete all indents
+    const result = await Indent.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} indents and ${deliveryResult.deletedCount} associated upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all indents error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all indents',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // ✅ Get single indent details
 router.get("/:id", auth, async (req, res) => {
   try {
@@ -202,6 +234,9 @@ router.delete("/:id", auth, async (req, res) => {
         message: 'Indent not found' 
       });
     }
+
+    // Delete associated upcoming delivery
+    await UpcomingDelivery.deleteMany({ st_id: req.params.id });
 
     // Delete image file if exists
     if (indent.imageUrl) {
@@ -371,35 +406,5 @@ router.post("/sync-all", auth, async (req, res) => {
   }
 });
 
-// DELETE ALL indents
-router.delete('/all', async (req, res) => {
-  try {
-    // Get all indent IDs before deletion
-    const indents = await Indent.find({}, '_id');
-    const indentIds = indents.map(indent => indent._id.toString());
-    
-    // Delete all associated upcoming deliveries
-    await UpcomingDelivery.deleteMany({
-      source_id: { $in: indentIds },
-      type: 'Indent'
-    });
-    
-    // Delete all indents
-    const result = await Indent.deleteMany({});
-    
-    res.json({
-      success: true,
-      message: `Successfully deleted all ${result.deletedCount} indents and their associated upcoming deliveries`,
-      deletedCount: result.deletedCount
-    });
-  } catch (err) {
-    console.error('Delete all indents error:', err.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete all indents',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
 
 export default router;

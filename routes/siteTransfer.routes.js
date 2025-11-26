@@ -190,6 +190,38 @@ router.get('/', async (req, res) => {
   }
 });
 
+// DELETE ALL site transfers - MUST BE BEFORE /:id route
+router.delete('/all', async (req, res) => {
+  try {
+    // Get all site transfer IDs before deletion
+    const siteTransfers = await SiteTransfer.find({}, 'siteTransferId');
+    const transferIds = siteTransfers.map(st => st.siteTransferId);
+    
+    // Delete all associated upcoming deliveries (using st_id which stores siteTransferId)
+    const deliveryResult = await UpcomingDelivery.deleteMany({
+      st_id: { $in: transferIds }
+    });
+    
+    console.log(`🗑️ Deleted ${deliveryResult.deletedCount} associated upcoming deliveries`);
+    
+    // Delete all site transfers
+    const result = await SiteTransfer.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} site transfers and ${deliveryResult.deletedCount} associated upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all site transfers error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all site transfers',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // GET site transfer by ID
 router.get('/:id', async (req, res) => {
   try {
@@ -350,35 +382,5 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
   }
 });
 
-// DELETE ALL site transfers
-router.delete('/all', async (req, res) => {
-  try {
-    // Get all site transfer IDs before deletion
-    const siteTransfers = await SiteTransfer.find({}, '_id');
-    const transferIds = siteTransfers.map(st => st._id.toString());
-    
-    // Delete all associated upcoming deliveries
-    await UpcomingDelivery.deleteMany({
-      source_id: { $in: transferIds },
-      type: 'SiteTransfer'
-    });
-    
-    // Delete all site transfers
-    const result = await SiteTransfer.deleteMany({});
-    
-    res.json({
-      success: true,
-      message: `Successfully deleted all ${result.deletedCount} site transfers and their associated upcoming deliveries`,
-      deletedCount: result.deletedCount
-    });
-  } catch (err) {
-    console.error('Delete all site transfers error:', err.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete all site transfers',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
 
 export default router;

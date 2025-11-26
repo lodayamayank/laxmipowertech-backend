@@ -337,6 +337,27 @@ router.put('/:id/status', protect, async (req, res) => {
   }
 });
 
+// DELETE ALL upcoming deliveries - MUST BE BEFORE /:id route
+router.delete('/all', async (req, res) => {
+  try {
+    // Delete all upcoming deliveries
+    const result = await UpcomingDelivery.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all upcoming deliveries error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all upcoming deliveries',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // DELETE upcoming delivery
 router.delete('/:id', async (req, res) => {
   try {
@@ -430,25 +451,5 @@ router.get('/test-sync/:transferNumber', protect, async (req, res) => {
   }
 });
 
-// DELETE ALL upcoming deliveries
-router.delete('/all', async (req, res) => {
-  try {
-    // Delete all upcoming deliveries
-    const result = await UpcomingDelivery.deleteMany({});
-    
-    res.json({
-      success: true,
-      message: `Successfully deleted all ${result.deletedCount} upcoming deliveries`,
-      deletedCount: result.deletedCount
-    });
-  } catch (err) {
-    console.error('Delete all upcoming deliveries error:', err.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete all upcoming deliveries',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
 
 export default router;
