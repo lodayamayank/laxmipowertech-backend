@@ -76,6 +76,13 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
       is_received: mat.is_received || false
     }));
 
+    // ✅ CRITICAL FIX: Map SiteTransfer status to UpcomingDelivery status
+    let deliveryStatus = 'Pending';
+    if (siteTransfer.status === 'transferred') deliveryStatus = 'Transferred';
+    else if (siteTransfer.status === 'approved') deliveryStatus = 'Partial';
+    else if (siteTransfer.status === 'pending') deliveryStatus = 'Pending';
+    else if (siteTransfer.status === 'cancelled') deliveryStatus = 'Cancelled';
+
     const deliveryData = {
       st_id: siteTransfer.siteTransferId,
       transfer_number: siteTransfer.siteTransferId,
@@ -83,7 +90,7 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
       from: siteTransfer.fromSite,
       to: siteTransfer.toSite,
       items: items,
-      status: 'Pending',
+      status: deliveryStatus,  // ✅ Use mapped status instead of hardcoded 'Pending'
       type: 'ST',
       createdBy: siteTransfer.requestedBy
     };

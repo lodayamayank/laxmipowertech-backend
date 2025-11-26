@@ -76,6 +76,13 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
       is_received: mat.is_received || false
     }));
 
+    // ✅ CRITICAL FIX: Map PurchaseOrder status to UpcomingDelivery status
+    let deliveryStatus = 'Pending';
+    if (purchaseOrder.status === 'transferred') deliveryStatus = 'Transferred';
+    else if (purchaseOrder.status === 'approved') deliveryStatus = 'Partial';
+    else if (purchaseOrder.status === 'pending') deliveryStatus = 'Pending';
+    else if (purchaseOrder.status === 'cancelled') deliveryStatus = 'Cancelled';
+
     const deliveryData = {
       st_id: purchaseOrder.purchaseOrderId,
       transfer_number: purchaseOrder.purchaseOrderId,
@@ -83,7 +90,7 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
       from: 'Vendor/Supplier',
       to: purchaseOrder.deliverySite,
       items: items,
-      status: 'Pending',
+      status: deliveryStatus,  // ✅ Use mapped status instead of hardcoded 'Pending'
       type: 'PO',
       createdBy: purchaseOrder.requestedBy
     };
