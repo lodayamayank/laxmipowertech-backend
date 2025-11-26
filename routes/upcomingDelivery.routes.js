@@ -2,10 +2,122 @@ import express from 'express';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import SiteTransfer from '../models/SiteTransfer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
+import Indent from '../models/Indent.js';
 import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
 import protect from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+// ✅ MIGRATION ENDPOINT: Sync all existing Purchase Orders and Indents to Upcoming Deliveries
+// Call this once to create delivery records for old data: POST /api/material/upcoming-deliveries/migrate-sync
+router.post('/migrate-sync', protect, async (req, res) => {
+  try {
+    let created = 0;
+    let skipped = 0;
+    let errors = [];
+
+    console.log('🔄 Starting migration: Syncing existing Intent POs to Upcoming Deliveries...');
+
+    // ✅ Sync all Purchase Orders
+    const purchaseOrders = await PurchaseOrder.find({});
+    console.log(`📦 Found ${purchaseOrders.length} Purchase Orders`);
+
+    for (const po of purchaseOrders) {
+      try {
+        // Check if delivery already exists
+        const existing = await UpcomingDelivery.findOne({ st_id: po.purchaseOrderId });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+
+        // Create delivery record
+        const items = po.materials.map(mat => ({
+          itemId: mat._id.toString(),
+          category: mat.category || '',
+          sub_category: mat.subCategory || '',
+          sub_category1: mat.subCategory1 || '',
+          st_quantity: mat.quantity || 0,
+          received_quantity: mat.received_quantity || 0,
+          is_received: mat.is_received || false
+        }));
+
+        await UpcomingDelivery.create({
+          st_id: po.purchaseOrderId,
+          transfer_number: po.purchaseOrderId,
+          date: po.requestDate || po.createdAt,
+          from: 'Vendor/Supplier',
+          to: po.deliverySite || 'Site',
+          items: items,
+          status: 'Pending',
+          type: 'PO',
+          createdBy: po.requestedBy || 'system'
+        });
+
+        created++;
+        console.log(`✅ Created delivery for PO: ${po.purchaseOrderId}`);
+      } catch (err) {
+        errors.push(`PO ${po.purchaseOrderId}: ${err.message}`);
+        console.error(`❌ Error syncing PO ${po.purchaseOrderId}:`, err.message);
+      }
+    }
+
+    // ✅ Sync all Indents
+    const indents = await Indent.find({}).populate('branch', 'name').populate('project', 'name').populate('requestedBy', 'name');
+    console.log(`📸 Found ${indents.length} Indents`);
+
+    for (const indent of indents) {
+      try {
+        // Check if delivery already exists
+        const existing = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
+        if (existing) {
+          skipped++;
+          continue;
+        }
+
+        // Create delivery record
+        await UpcomingDelivery.create({
+          st_id: indent._id.toString(),
+          transfer_number: indent.indentId,
+          date: indent.createdAt,
+          from: 'Vendor',
+          to: indent.branch?.name || indent.project?.name || 'Site',
+          items: [],
+          status: 'Pending',
+          type: 'PO',
+          createdBy: indent.requestedBy?.name || indent.requestedBy || 'system'
+        });
+
+        created++;
+        console.log(`✅ Created delivery for Indent: ${indent.indentId}`);
+      } catch (err) {
+        errors.push(`Indent ${indent.indentId}: ${err.message}`);
+        console.error(`❌ Error syncing Indent ${indent.indentId}:`, err.message);
+      }
+    }
+
+    console.log(`✅ Migration complete: ${created} created, ${skipped} skipped, ${errors.length} errors`);
+
+    res.json({
+      success: true,
+      message: 'Migration completed successfully',
+      summary: {
+        created,
+        skipped,
+        totalProcessed: purchaseOrders.length + indents.length,
+        errors: errors.length,
+        errorDetails: errors
+      }
+    });
+  } catch (err) {
+    console.error('❌ Migration error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Migration failed',
+      error: err.message
+    });
+  }
+});
 
 // GET all upcoming deliveries (NO role-based filtering - matches demonstrated project)
 router.get('/', protect, async (req, res) => {
