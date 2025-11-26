@@ -175,6 +175,72 @@ router.put("/:id/status", auth, async (req, res) => {
   }
 });
 
+// ✅ UPDATE INDENT (General update with status sync)
+router.put("/:id", auth, async (req, res) => {
+  try {
+    const { status, remarks, requestedBy, deliverySite, materials } = req.body;
+    
+    const updateData = {
+      status,
+      remarks,
+      requestedBy,
+      deliverySite,
+      materials
+    };
+    
+    // Remove undefined fields
+    Object.keys(updateData).forEach(key => 
+      updateData[key] === undefined && delete updateData[key]
+    );
+    
+    const indent = await Indent.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+    
+    if (!indent) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Indent not found" 
+      });
+    }
+    
+    // ✅ Sync status to UpcomingDelivery if status was updated
+    if (status) {
+      try {
+        const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
+        if (delivery) {
+          // Map indent status to delivery status
+          let deliveryStatus = 'Pending';
+          if (status === 'transferred' || status === 'delivered') deliveryStatus = 'Transferred';
+          else if (status === 'approved') deliveryStatus = 'Partial';
+          else if (status === 'pending') deliveryStatus = 'Pending';
+          else if (status === 'rejected' || status === 'cancelled') deliveryStatus = 'Cancelled';
+          
+          delivery.status = deliveryStatus;
+          await delivery.save();
+          console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: ${deliveryStatus}`);
+        }
+      } catch (syncErr) {
+        console.error('⚠️ Failed to sync status to UpcomingDelivery:', syncErr.message);
+      }
+    }
+    
+    res.json({ 
+      success: true,
+      data: indent 
+    });
+  } catch (err) {
+    console.error('❌ Update indent error:', err);
+    res.status(400).json({ 
+      success: false,
+      message: "Failed to update indent", 
+      error: err.message 
+    });
+  }
+});
+
 // ✅ DELETE ALL indents - MUST BE BEFORE /:id route
 router.delete('/all', auth, async (req, res) => {
   try {
