@@ -7,7 +7,7 @@ import protect from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
-// GET all upcoming deliveries (with user-based filtering)
+// GET all upcoming deliveries (NO role-based filtering - matches demonstrated project)
 router.get('/', protect, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -15,22 +15,15 @@ router.get('/', protect, async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    // Build base query
+    // Build base query - NO ROLE-BASED FILTERING
+    // ✅ CRITICAL FIX: Show ALL deliveries to ALL users (admin + client)
+    // This matches the demonstrated project behavior
     let query = {};
-
-    // ✅ ROLE-BASED FILTERING
-    // If user is client/user, show only their own deliveries
-    // If user is admin, show all deliveries
-    if (req.user.role !== 'admin') {
-      query.createdBy = req.user.id || req.user._id.toString();
-      console.log('👤 Client user - filtering by createdBy:', query.createdBy);
-    } else {
-      console.log('👑 Admin user - showing all deliveries');
-    }
 
     // Add search filters
     if (search) {
       query.$or = [
+        { st_id: { $regex: search, $options: 'i' } },
         { transfer_number: { $regex: search, $options: 'i' } },
         { from: { $regex: search, $options: 'i' } },
         { to: { $regex: search, $options: 'i' } },
@@ -45,7 +38,7 @@ router.get('/', protect, async (req, res) => {
 
     const total = await UpcomingDelivery.countDocuments(query);
 
-    console.log(`📦 Found ${deliveries.length} deliveries for user ${req.user.email}`);
+    console.log(`📦 Found ${deliveries.length} upcoming deliveries (total: ${total})`);
 
     res.json({
       success: true,
