@@ -59,15 +59,32 @@ const generatePurchaseOrderId = async () => {
 // Sync to UpcomingDelivery
 const syncToUpcomingDelivery = async (purchaseOrder) => {
   try {
-    const items = purchaseOrder.materials.map(mat => ({
-      itemId: mat._id.toString(),
-      category: mat.category || '',
-      sub_category: mat.subCategory || '',
-      sub_category1: mat.subCategory1 || '',
-      st_quantity: mat.quantity || 0,
-      received_quantity: mat.received_quantity || 0,
-      is_received: mat.is_received || false
-    }));
+    console.log('🔄 Starting sync to UpcomingDelivery for PO:', purchaseOrder.purchaseOrderId);
+    console.log('📊 Materials count:', purchaseOrder.materials?.length || 0);
+    
+    // ✅ Safety check for materials
+    if (!purchaseOrder.materials || purchaseOrder.materials.length === 0) {
+      console.log('⚠️ No materials to sync, skipping UpcomingDelivery creation');
+      return;
+    }
+    
+    const items = purchaseOrder.materials.map((mat, index) => {
+      if (!mat._id) {
+        console.error(`❌ Material ${index} is missing _id:`, mat);
+        throw new Error(`Material ${index} is missing _id field`);
+      }
+      return {
+        itemId: mat._id.toString(),
+        category: mat.category || '',
+        sub_category: mat.subCategory || '',
+        sub_category1: mat.subCategory1 || '',
+        st_quantity: mat.quantity || 0,
+        received_quantity: mat.received_quantity || 0,
+        is_received: mat.is_received || false
+      };
+    });
+    
+    console.log('✅ Mapped items for UpcomingDelivery:', items.length);
 
     // ✅ CRITICAL FIX: Map PurchaseOrder status to UpcomingDelivery status
     let deliveryStatus = 'Pending';
@@ -75,6 +92,8 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
     else if (purchaseOrder.status === 'approved') deliveryStatus = 'Partial';
     else if (purchaseOrder.status === 'pending') deliveryStatus = 'Pending';
     else if (purchaseOrder.status === 'cancelled') deliveryStatus = 'Cancelled';
+    
+    console.log('🆔 Delivery status:', deliveryStatus);
 
     const deliveryData = {
       st_id: purchaseOrder.purchaseOrderId,
@@ -91,26 +110,40 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
     const existing = await UpcomingDelivery.findOne({ st_id: purchaseOrder.purchaseOrderId });
     
     if (existing) {
+      console.log('🔄 Updating existing UpcomingDelivery:', existing._id);
       await UpcomingDelivery.findByIdAndUpdate(existing._id, deliveryData);
     } else {
+      console.log('➕ Creating new UpcomingDelivery');
       await UpcomingDelivery.create(deliveryData);
     }
+    
+    console.log('✅ Successfully synced to UpcomingDelivery');
   } catch (err) {
-    console.error('Sync to UpcomingDelivery failed:', err.message);
+    console.error('❌ SYNC TO UPCOMING DELIVERY FAILED:');
+    console.error('Error message:', err.message);
+    console.error('Error stack:', err.stack);
+    throw err; // Re-throw to catch in main handler
   }
 };
 
 // CREATE purchase order
 router.post('/', upload.array('attachments', 10), async (req, res) => {
   try {
+    console.log('📥 Received purchase order creation request');
+    console.log('📦 Request body:', req.body);
+    console.log('📎 Files:', req.files);
+    
     let materials = req.body.materials;
     if (typeof materials === 'string') {
       try {
         materials = JSON.parse(materials);
+        console.log('✅ Parsed materials:', materials);
       } catch (e) {
+        console.error('❌ Materials parse error:', e);
         return res.status(400).json({ 
           success: false,
-          message: 'Invalid materials format' 
+          message: 'Invalid materials format',
+          error: e.message
         });
       }
     }
@@ -118,6 +151,7 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     const { requestedBy, deliverySite, status, remarks } = req.body;
     
     if (!requestedBy || !deliverySite) {
+      console.error('❌ Missing required fields');
       return res.status(400).json({ 
         success: false,
         message: 'Missing required fields: requestedBy, deliverySite' 
@@ -125,10 +159,67 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     }
 
     const purchaseOrderId = await generatePurchaseOrderId();
+    console.log('🆔 Generated Purchase Order ID:', purchaseOrderId);
     
-    // ✅ Use absolute URLs with backend domain for images
-    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
-    const attachments = req.files ? req.files.map(f => `${baseURL}/uploads/purchaseOrders/${f.filename}`) : [];
+    // ✅ UPLOAD ATTACHMENTS TO CLOUDINARY
+    let attachments = [];
+    if (req.files && req.files.length > 0) {
+      try {
+        console.log(`☁️ Uploading ${req.files.length} attachments to Cloudinary...`);
+        const cloudinaryResults = await uploadMultipleToCloudinary(
+          req.files, 
+          'material-transfer/purchase-orders'
+        );
+        attachments = cloudinaryResults.map(result => ({
+          url: result.url,
+          publicId: result.publicId
+        }));
+        console.log(`✅ Uploaded ${attachments.length} attachments to Cloudinary:`, attachments);
+      } catch (uploadErr) {
+        console.error('❌ Cloudinary upload error:', uploadErr);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload attachments to Cloudinary',
+          error: uploadErr.message
+        });
+      }
+    } else {
+      console.log('ℹ️ No attachments to upload');
+    }
+
+    // ✅ VALIDATE MATERIALS
+    if (materials && materials.length > 0) {
+      console.log('🔍 Validating materials...');
+      for (let i = 0; i < materials.length; i++) {
+        const material = materials[i];
+        if (!material.itemName || material.itemName.trim() === '') {
+          console.error(`❌ Material ${i + 1} missing itemName:`, material);
+          return res.status(400).json({
+            success: false,
+            message: `Material ${i + 1} is missing itemName`,
+            material: material
+          });
+        }
+        if (!material.quantity || material.quantity <= 0) {
+          console.error(`❌ Material ${i + 1} invalid quantity:`, material);
+          return res.status(400).json({
+            success: false,
+            message: `Material ${i + 1} has invalid quantity`,
+            material: material
+          });
+        }
+      }
+      console.log('✅ All materials validated successfully');
+    }
+
+    console.log('💾 Creating purchase order with data:', {
+      purchaseOrderId,
+      requestedBy,
+      deliverySite,
+      materialsCount: materials?.length || 0,
+      status: status || 'pending',
+      attachmentsCount: attachments.length
+    });
 
     const purchaseOrder = new PurchaseOrder({
       purchaseOrderId,
@@ -142,7 +233,10 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     });
 
     await purchaseOrder.save();
+    console.log('✅ Purchase order saved to database:', purchaseOrder._id);
+    
     await syncToUpcomingDelivery(purchaseOrder);
+    console.log('✅ Synced to upcoming delivery');
 
     res.status(201).json({
       success: true,
@@ -150,11 +244,22 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
       data: purchaseOrder
     });
   } catch (err) {
-    console.error('Create purchase order error:', err.message);
+    console.error('❌ CREATE PURCHASE ORDER ERROR:');
+    console.error('Error message:', err.message);
+    console.error('Error stack:', err.stack);
+    console.error('Error name:', err.name);
+    if (err.errors) {
+      console.error('Validation errors:', err.errors);
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to create purchase order',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: err.message,
+      details: err.errors ? Object.keys(err.errors).map(key => ({
+        field: key,
+        message: err.errors[key].message
+      })) : undefined
     });
   }
 });
