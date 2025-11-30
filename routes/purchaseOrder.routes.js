@@ -1,6 +1,7 @@
 import express from 'express';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
+import User from '../models/User.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -43,6 +44,30 @@ const upload = multer({
   fileFilter: fileFilter,
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB
 });
+
+// ✅ Helper function to populate requestedBy with user name
+const populateRequestedBy = async (order) => {
+  if (!order.requestedBy) return order;
+  
+  // Check if requestedBy is an ObjectId (24 hex characters)
+  const isObjectId = /^[0-9a-fA-F]{24}$/.test(order.requestedBy);
+  
+  if (isObjectId) {
+    try {
+      const user = await User.findById(order.requestedBy);
+      if (user) {
+        return {
+          ...order.toObject(),
+          requestedBy: user.name || user.email || order.requestedBy
+        };
+      }
+    } catch (err) {
+      console.error('Error populating requestedBy:', err.message);
+    }
+  }
+  
+  return order;
+};
 
 // Generate unique purchaseOrderId
 const generatePurchaseOrderId = async () => {
@@ -189,9 +214,14 @@ router.get('/', async (req, res) => {
 
     const total = await PurchaseOrder.countDocuments(query);
 
+    // ✅ Populate requestedBy for all orders
+    const populatedOrders = await Promise.all(
+      orders.map(order => populateRequestedBy(order))
+    );
+
     res.json({
       success: true,
-      data: orders,
+      data: populatedOrders,
       pagination: {
         page,
         limit,
@@ -251,7 +281,11 @@ router.get('/:id', async (req, res) => {
         message: 'Purchase order not found'
       });
     }
-    res.json({ success: true, data: order });
+    
+    // ✅ Populate requestedBy with user name
+    const populatedOrder = await populateRequestedBy(order);
+    
+    res.json({ success: true, data: populatedOrder });
   } catch (err) {
     console.error('Get purchase order error:', err.message);
     res.status(500).json({
