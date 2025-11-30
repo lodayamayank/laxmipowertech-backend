@@ -2,48 +2,16 @@ import express from 'express';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import User from '../models/User.js';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
+import { 
+  upload, 
+  uploadMultipleToCloudinary,
+  deleteFromCloudinary,
+  deleteMultipleFromCloudinary,
+  extractPublicId 
+} from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Create uploads directory
-const uploadsDir = path.join(__dirname, '../uploads/purchaseOrders');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Configure multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '_' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp|bmp|pdf/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype) || file.mimetype === 'application/pdf';
-  
-  if (extname && mimetype) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only image and PDF files are allowed!'), false);
-  }
-};
-
-const upload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 } // 10MB
-});
 
 // ✅ Helper function to populate requestedBy with user name
 const populateRequestedBy = async (order) => {
@@ -409,11 +377,16 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
       });
     }
 
-    const attachmentPath = order.attachments[index];
-    const filePath = path.join(__dirname, '..', attachmentPath);
-    
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    // ✅ DELETE FROM CLOUDINARY
+    const attachment = order.attachments[index];
+    if (attachment.publicId) {
+      try {
+        await deleteFromCloudinary(attachment.publicId);
+        console.log('✅ Deleted attachment from Cloudinary:', attachment.publicId);
+      } catch (cloudErr) {
+        console.error('⚠️ Failed to delete from Cloudinary:', cloudErr.message);
+        // Continue with deletion even if Cloudinary deletion fails
+      }
     }
 
     order.attachments.splice(index, 1);

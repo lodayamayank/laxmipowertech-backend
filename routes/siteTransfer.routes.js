@@ -1,48 +1,16 @@
 import express from 'express';
 import SiteTransfer from '../models/SiteTransfer.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
 import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
+import { 
+  upload, 
+  uploadMultipleToCloudinary,
+  deleteFromCloudinary,
+  deleteMultipleFromCloudinary,
+  extractPublicId 
+} from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Create uploads directory
-const uploadsDir = path.join(__dirname, '../uploads/siteTransfers');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-// Configure multer
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '_' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp|bmp/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
-  
-  if (extname && mimetype) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed!'), false);
-  }
-};
-
-const upload = multer({
-  storage: storage,
-  fileFilter: fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }
-});
 
 // Generate unique siteTransferId
 const generateSiteTransferId = async () => {
@@ -133,9 +101,20 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
 
     const siteTransferId = await generateSiteTransferId();
     
-    // ✅ Use absolute URLs with backend domain for images
-    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
-    const attachments = req.files ? req.files.map(f => `${baseURL}/uploads/siteTransfers/${f.filename}`) : [];
+    // ✅ UPLOAD ATTACHMENTS TO CLOUDINARY
+    let attachments = [];
+    if (req.files && req.files.length > 0) {
+      console.log(`☁️ Uploading ${req.files.length} attachments to Cloudinary...`);
+      const cloudinaryResults = await uploadMultipleToCloudinary(
+        req.files, 
+        'material-transfer/site-transfers'
+      );
+      attachments = cloudinaryResults.map(result => ({
+        url: result.url,
+        publicId: result.publicId
+      }));
+      console.log(`✅ Uploaded ${attachments.length} attachments to Cloudinary`);
+    }
 
     const siteTransfer = new SiteTransfer({
       siteTransferId,

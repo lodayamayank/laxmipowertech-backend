@@ -37,7 +37,12 @@ const SiteTransferSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'transferred', 'cancelled'], 
     default: 'pending' 
   },
-  attachments: [String],
+  attachments: [
+    {
+      url: { type: String, required: true },
+      publicId: { type: String, required: true }
+    }
+  ],
   createdAt: { 
     type: Date, 
     default: Date.now 

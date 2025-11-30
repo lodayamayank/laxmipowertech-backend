@@ -36,7 +36,12 @@ const PurchaseOrderSchema = new mongoose.Schema({
     enum: ['pending', 'approved', 'transferred', 'cancelled'], 
     default: 'pending' 
   },
-  attachments: [String],
+  attachments: [
+    {
+      url: { type: String, required: true },
+      publicId: { type: String, required: true }
+    }
+  ],
   remarks: { type: String },
   createdAt: { 
     type: Date, 

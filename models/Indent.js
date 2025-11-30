@@ -8,7 +8,8 @@ const IndentSchema = new mongoose.Schema(
       sparse: true, // Allows null values but enforces uniqueness when present
       index: true 
     },
-    imageUrl: { type: String }, // Path to uploaded intent list image
+    imageUrl: { type: String }, // Cloudinary URL
+    imagePublicId: { type: String }, // Cloudinary public_id for deletion
     project: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
