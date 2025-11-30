@@ -68,7 +68,8 @@ async function getAttendanceSummary(userId, year, month) {
   let sickLeaveDays = 0;
   let casualLeaveDays = 0;
   let weekOffs = 0;
-
+  let totalHoursWorked = 0;
+  let totalOvertimeHours = 0;
   // Create a map of dates for quick lookup
   const attendanceByDate = {};
   attendanceRecords.forEach(record => {
@@ -124,11 +125,19 @@ async function getAttendanceSummary(userId, year, month) {
       // Calculate work duration
       const firstIn = new Date(punchIns[0].createdAt);
       const lastOut = new Date(punchOuts[punchOuts.length - 1].createdAt);
-      const duration = (lastOut - firstIn) / (1000 * 60); // minutes
+      const durationMinutes = (lastOut - firstIn) / (1000 * 60); // minutes
+      const durationHours = durationMinutes / 60; // hours
 
-      if (duration >= 480) { // 8 hours
+      // Track total hours
+      totalHoursWorked += durationHours;
+
+      // Calculate overtime (beyond 9 hours)
+      const dailyOvertimeHours = Math.max(0, durationHours - 9);
+      totalOvertimeHours += dailyOvertimeHours;
+
+      if (durationMinutes >= 480) { // 8 hours
         presentDays++;
-      } else if (duration >= 240) { // 4 hours
+      } else if (durationMinutes >= 240) { // 4 hours
         halfDays++;
       } else {
         absentDays++;
@@ -148,7 +157,9 @@ async function getAttendanceSummary(userId, year, month) {
     sickLeaveDays,
     casualLeaveDays,
     weekOffs,
-    totalDays: daysInMonth
+    totalDays: daysInMonth,
+    totalHoursWorked: Math.round(totalHoursWorked * 100) / 100, // ADD THIS
+    totalOvertimeHours: Math.round(totalOvertimeHours * 100) / 100 // ADD THIS
   };
 }
 
@@ -165,7 +176,8 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
   let sickLeaveDays = 0;
   let casualLeaveDays = 0;
   let weekOffs = 0;
-
+  let totalHoursWorked = 0;
+  let totalOvertimeHours = 0;
   // Create a map of dates for quick lookup
   const attendanceByDate = {};
   attendanceRecords.forEach(record => {
@@ -221,11 +233,19 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
       // Calculate work duration
       const firstIn = new Date(punchIns[0].createdAt);
       const lastOut = new Date(punchOuts[punchOuts.length - 1].createdAt);
-      const duration = (lastOut - firstIn) / (1000 * 60); // minutes
+      const durationMinutes = (lastOut - firstIn) / (1000 * 60); // minutes
+      const durationHours = durationMinutes / 60; // hours
 
-      if (duration >= 480) { // 8 hours
+      // Track total hours
+      totalHoursWorked += durationHours;
+
+      // Calculate overtime (beyond 9 hours)
+      const dailyOvertimeHours = Math.max(0, durationHours - 9);
+      totalOvertimeHours += dailyOvertimeHours;
+
+      if (durationMinutes >= 480) { // 8 hours
         presentDays++;
-      } else if (duration >= 240) { // 4 hours
+      } else if (durationMinutes >= 240) { // 4 hours
         halfDays++;
       } else {
         absentDays++;
@@ -245,7 +265,9 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
     sickLeaveDays,
     casualLeaveDays,
     weekOffs,
-    totalDays: daysInMonth
+    totalDays: daysInMonth,
+    totalHoursWorked: Math.round(totalHoursWorked * 100) / 100,
+    totalOvertimeHours: Math.round(totalOvertimeHours * 100) / 100
   };
 }
 
@@ -424,7 +446,16 @@ router.get('/calculate', authMiddleware, async (req, res) => {
             perDaySalary = grossSalary / attendanceSummary.workingDays;
         }
       }
+      // Calculate travel allowance
+      const travelAllowance = (user.perDayTravelAllowance || 0) * attendanceSummary.presentDays;
+      const railwayPass = user.railwayPassAmount || 0;
+      const totalTravelAllowance = travelAllowance + railwayPass;
 
+      // Calculate overtime pay
+      const standardHours = user.standardDailyHours || 9;
+      const overtimeMultiplier = user.overtimeRateMultiplier || 1.0;
+      const perHourRate = perDaySalary / standardHours;
+      const overtimePay = attendanceSummary.totalOvertimeHours * perHourRate * overtimeMultiplier;
       // Calculate deductions (using effective unpaid leaves)
       const absentDeduction = attendanceSummary.absentDays * perDaySalary;
       const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
@@ -432,9 +463,13 @@ router.get('/calculate', authMiddleware, async (req, res) => {
 
       const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
 
-      // Net Salary = Gross - Deductions + Reimbursements
-      const netSalary = grossSalary - totalDeductions + reimbursementsSummary.totalReimbursement;
-
+      // Net Salary = Gross - Deductions + Reimbursements + Travel + Overtime
+      const netSalary =
+        grossSalary
+        - totalDeductions
+        + reimbursementsSummary.totalReimbursement
+        + totalTravelAllowance
+        + overtimePay;
       // Calculate payable days (using effective paid leaves)
       const payableDays =
         attendanceSummary.presentDays +
@@ -452,6 +487,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
         salaryType: user.salaryType || 'monthly',
         grossSalary: Math.round(grossSalary),
         perDaySalary: Math.round(perDaySalary),
+        perHourRate: Math.round(perHourRate),
         attendance: {
           ...attendanceSummary,
           effectivePaidLeaveDays,
@@ -467,6 +503,17 @@ router.get('/calculate', authMiddleware, async (req, res) => {
         reimbursements: {
           total: Math.round(reimbursementsSummary.totalReimbursement),
           count: reimbursementsSummary.count
+        },
+        travel: { 
+          perDayAllowance: Math.round(travelAllowance),
+          railwayPass: Math.round(railwayPass),
+          total: Math.round(totalTravelAllowance)
+        },
+        overtime: {
+          hours: attendanceSummary.totalOvertimeHours,
+          rate: Math.round(perHourRate),
+          multiplier: overtimeMultiplier,
+          pay: Math.round(overtimePay)
         },
         netSalary: Math.round(netSalary),
         month: monthNum,
@@ -513,7 +560,7 @@ router.get('/user/:userId', authMiddleware, async (req, res) => {
     let grossSalary = 0;
     let perDaySalary = 0;
 
-        if (user.ctcAmount && user.ctcAmount > 0) {
+    if (user.ctcAmount && user.ctcAmount > 0) {
       switch (user.salaryType) {
         case 'monthly':
           grossSalary = user.ctcAmount / 12;

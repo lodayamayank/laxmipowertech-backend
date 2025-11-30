@@ -111,7 +111,9 @@ router.put('/me', authMiddleware, async (req, res) => {
       'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
       'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
       'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password',
-      'ctcAmount', 'salaryType', 'salaryEffectiveDate'
+      'ctcAmount', 'salaryType', 'salaryEffectiveDate',
+      'perDayTravelAllowance', 'railwayPassAmount', 
+      'standardDailyHours', 'overtimeRateMultiplier' 
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -152,7 +154,9 @@ router.put('/:id', authMiddleware, async (req, res) => {
       'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
       'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
       'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password', 'username',
-      'ctcAmount', 'salaryType', 'salaryEffectiveDate'
+      'ctcAmount', 'salaryType', 'salaryEffectiveDate',
+        'perDayTravelAllowance', 'railwayPassAmount', 
+  'standardDailyHours', 'overtimeRateMultiplier' 
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -293,6 +297,55 @@ router.put('/:id/employee', authMiddleware, async (req, res) => {
     res.status(500).json({ message: 'Failed to update employee info', error: err.message });
   }
 });
+// ✅ Update salary configuration (admin only)
+router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
+  try {
+    // Only admins can update salary config
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Access denied. Admins only.' });
+    }
 
+    const { 
+      ctcAmount, 
+      salaryType, 
+      salaryEffectiveDate,
+      perDayTravelAllowance,
+      railwayPassAmount,
+      standardDailyHours,
+      overtimeRateMultiplier 
+    } = req.body;
+
+    const updateData = {};
+    
+    // Only include fields that are provided
+    if (ctcAmount !== undefined) updateData.ctcAmount = ctcAmount;
+    if (salaryType !== undefined) updateData.salaryType = salaryType;
+    if (salaryEffectiveDate !== undefined) updateData.salaryEffectiveDate = salaryEffectiveDate;
+    if (perDayTravelAllowance !== undefined) updateData.perDayTravelAllowance = perDayTravelAllowance;
+    if (railwayPassAmount !== undefined) updateData.railwayPassAmount = railwayPassAmount;
+    if (standardDailyHours !== undefined) updateData.standardDailyHours = standardDailyHours;
+    if (overtimeRateMultiplier !== undefined) updateData.overtimeRateMultiplier = overtimeRateMultiplier;
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.params.id,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    )
+      .populate('project', 'name')
+      .populate('assignedBranches', 'name radius lat lng address');
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: 'Salary configuration updated successfully',
+      user: updatedUser
+    });
+  } catch (err) {
+    console.error('❌ Salary config update failed:', err);
+    res.status(500).json({ message: 'Failed to update salary config', error: err.message });
+  }
+});
 
 export default router;

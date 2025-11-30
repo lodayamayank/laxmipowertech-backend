@@ -42,6 +42,14 @@ const userSchema = new mongoose.Schema(
     ctcAmount: { type: Number, default: 0 },
     salaryType: { type: String, enum: ['monthly', 'weekly', 'daily'], default: 'monthly' },
     salaryEffectiveDate: Date,
+
+    // Travel Allowance
+    perDayTravelAllowance: { type: Number, default: 0 }, // Travel allowance per working day
+    railwayPassAmount: { type: Number, default: 0 }, // Monthly railway pass reimbursement
+
+    // Overtime Configuration
+    standardDailyHours: { type: Number, default: 9 }, // Standard working hours per day (for OT calculation)
+    overtimeRateMultiplier: { type: Number, default: 1.0 }, // OT rate multiplier (1.0 = normal rate, 1.5 = time-and-a-half)
   },
   { timestamps: true }
 );
