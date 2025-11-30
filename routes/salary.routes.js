@@ -513,7 +513,7 @@ router.get('/user/:userId', authMiddleware, async (req, res) => {
     let grossSalary = 0;
     let perDaySalary = 0;
 
-    if (user.ctcAmount && user.ctcAmount > 0) {
+        if (user.ctcAmount && user.ctcAmount > 0) {
       switch (user.salaryType) {
         case 'monthly':
           grossSalary = user.ctcAmount / 12;
@@ -528,96 +528,58 @@ router.get('/user/:userId', authMiddleware, async (req, res) => {
           grossSalary = perDaySalary * attendanceSummary.workingDays;
           break;
         default:
+          grossSalary = user.ctcAmount / 12;
+          perDaySalary = grossSalary / attendanceSummary.workingDays;
       }
-
-      const currentDate = new Date();
-      const monthNum = parseInt(month) || currentDate.getMonth() + 1;
-      const yearNum = parseInt(year) || currentDate.getFullYear();
-
-      const user = await User.findById(userId)
-        .populate('project', 'name')
-        .populate('assignedBranches', 'name')
-        .lean();
-
-      if (!user) {
-        return res.status(404).json({ message: 'User not found' });
-      }
-
-      const [attendanceSummary, reimbursementsSummary] = await Promise.all([
-        getAttendanceSummary(userId, yearNum, monthNum),
-        getReimbursementsSummary(userId, yearNum, monthNum)
-      ]);
-
-      let grossSalary = 0;
-      let perDaySalary = 0;
-
-      if (user.ctcAmount && user.ctcAmount > 0) {
-        switch (user.salaryType) {
-          case 'monthly':
-            grossSalary = user.ctcAmount / 12;
-            perDaySalary = grossSalary / attendanceSummary.workingDays;
-            break;
-          case 'weekly':
-            grossSalary = (user.ctcAmount / 52) * 4.33;
-            perDaySalary = grossSalary / attendanceSummary.workingDays;
-            break;
-          case 'daily':
-            perDaySalary = user.ctcAmount;
-            grossSalary = perDaySalary * attendanceSummary.workingDays;
-            break;
-          default:
-            grossSalary = user.ctcAmount / 12;
-            perDaySalary = grossSalary / attendanceSummary.workingDays;
-        }
-      }
-
-      const absentDeduction = attendanceSummary.absentDays * perDaySalary;
-      const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
-      const unpaidLeaveDeduction = attendanceSummary.unpaidLeaveDays * perDaySalary;
-
-      const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
-
-      // Net Salary = Gross - Deductions + Reimbursements
-      const netSalary = grossSalary - totalDeductions + reimbursementsSummary.totalReimbursement;
-
-      const payableDays = attendanceSummary.presentDays +
-        (attendanceSummary.halfDays * 0.5) +
-        attendanceSummary.paidLeaveDays +
-        attendanceSummary.sickLeaveDays +
-        attendanceSummary.casualLeaveDays;
-
-      res.json({
-        userId: user._id,
-        name: user.name,
-        username: user.username,
-        employeeId: user.employeeId || '-',
-        role: user.role,
-        department: user.department || '-',
-        ctcAmount: user.ctcAmount || 0,
-        salaryType: user.salaryType || 'monthly',
-        grossSalary: Math.round(grossSalary),
-        perDaySalary: Math.round(perDaySalary),
-        attendance: attendanceSummary,
-        payableDays: Math.round(payableDays * 10) / 10,
-        deductions: {
-          absent: Math.round(absentDeduction),
-          halfDay: Math.round(halfDayDeduction),
-          unpaidLeave: Math.round(unpaidLeaveDeduction),
-          total: Math.round(totalDeductions)
-        },
-        reimbursements: {
-          total: Math.round(reimbursementsSummary.totalReimbursement),
-          count: reimbursementsSummary.count,
-          details: reimbursementsSummary.details
-        },
-        netSalary: Math.round(netSalary),
-        month: monthNum,
-        year: yearNum
-      });
-    } catch (err) {
-      console.error('Error fetching user salary:', err);
-      res.status(500).json({ message: 'Failed to fetch salary', error: err.message });
     }
-  });
+
+    const absentDeduction = attendanceSummary.absentDays * perDaySalary;
+    const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
+    const unpaidLeaveDeduction = attendanceSummary.unpaidLeaveDays * perDaySalary;
+
+    const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
+
+    // Net Salary = Gross - Deductions + Reimbursements
+    const netSalary = grossSalary - totalDeductions + reimbursementsSummary.totalReimbursement;
+
+    const payableDays = attendanceSummary.presentDays +
+      (attendanceSummary.halfDays * 0.5) +
+      attendanceSummary.paidLeaveDays +
+      attendanceSummary.sickLeaveDays +
+      attendanceSummary.casualLeaveDays;
+
+    res.json({
+      userId: user._id,
+      name: user.name,
+      username: user.username,
+      employeeId: user.employeeId || '-',
+      role: user.role,
+      department: user.department || '-',
+      ctcAmount: user.ctcAmount || 0,
+      salaryType: user.salaryType || 'monthly',
+      grossSalary: Math.round(grossSalary),
+      perDaySalary: Math.round(perDaySalary),
+      attendance: attendanceSummary,
+      payableDays: Math.round(payableDays * 10) / 10,
+      deductions: {
+        absent: Math.round(absentDeduction),
+        halfDay: Math.round(halfDayDeduction),
+        unpaidLeave: Math.round(unpaidLeaveDeduction),
+        total: Math.round(totalDeductions)
+      },
+      reimbursements: {
+        total: Math.round(reimbursementsSummary.totalReimbursement),
+        count: reimbursementsSummary.count,
+        details: reimbursementsSummary.details
+      },
+      netSalary: Math.round(netSalary),
+      month: monthNum,
+      year: yearNum
+    });
+  } catch (err) {
+    console.error('Error fetching user salary:', err);
+    res.status(500).json({ message: 'Failed to fetch salary', error: err.message });
+  }
+});
 
 export default router;
