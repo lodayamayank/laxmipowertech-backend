@@ -58,7 +58,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
     } catch (uploadErr) {
       console.error("Cloudinary upload failed:", uploadErr);
       return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
-    }
+    } 
 
     // ✅ Save attendance
     try {
