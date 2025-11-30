@@ -5,6 +5,11 @@ import PurchaseOrder from '../models/PurchaseOrder.js';
 import Indent from '../models/Indent.js';
 import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
 import protect from '../middleware/authMiddleware.js';
+import { 
+  upload, 
+  uploadMultipleToCloudinary,
+  deleteFromCloudinary 
+} from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
 
@@ -556,5 +561,108 @@ router.get('/test-sync/:transferNumber', protect, async (req, res) => {
   }
 });
 
+// ✅ UPLOAD DELIVERY RECEIPT IMAGES (Cloudinary)
+router.post('/:id/upload-receipts', upload.array('receipts', 10), async (req, res) => {
+  try {
+    console.log('📥 Upload receipt request for delivery:', req.params.id);
+    console.log('📎 Files:', req.files?.length || 0);
+    
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No files uploaded'
+      });
+    }
+
+    const delivery = await UpcomingDelivery.findById(req.params.id);
+    if (!delivery) {
+      return res.status(404).json({
+        success: false,
+        message: 'Delivery not found'
+      });
+    }
+
+    // ✅ UPLOAD TO CLOUDINARY
+    console.log(`☁️ Uploading ${req.files.length} receipt images to Cloudinary...`);
+    const cloudinaryResults = await uploadMultipleToCloudinary(
+      req.files, 
+      'material-transfer/delivery-receipts'
+    );
+    
+    const newAttachments = cloudinaryResults.map(result => ({
+      url: result.url,
+      publicId: result.publicId
+    }));
+    
+    console.log(`✅ Uploaded ${newAttachments.length} receipts to Cloudinary`);
+
+    // ✅ ADD TO EXISTING ATTACHMENTS
+    delivery.attachments = delivery.attachments || [];
+    delivery.attachments.push(...newAttachments);
+    await delivery.save();
+
+    res.json({
+      success: true,
+      message: `${newAttachments.length} receipt(s) uploaded successfully`,
+      data: delivery
+    });
+  } catch (err) {
+    console.error('❌ Upload receipt error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload receipts',
+      error: err.message
+    });
+  }
+});
+
+// ✅ DELETE DELIVERY RECEIPT IMAGE
+router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
+  try {
+    const delivery = await UpcomingDelivery.findById(req.params.id);
+    if (!delivery) {
+      return res.status(404).json({
+        success: false,
+        message: 'Delivery not found'
+      });
+    }
+
+    const index = parseInt(req.params.attachmentIndex);
+    if (index < 0 || index >= delivery.attachments.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid attachment index'
+      });
+    }
+
+    // ✅ DELETE FROM CLOUDINARY
+    const attachment = delivery.attachments[index];
+    if (attachment.publicId) {
+      try {
+        await deleteFromCloudinary(attachment.publicId);
+        console.log('✅ Deleted receipt from Cloudinary:', attachment.publicId);
+      } catch (cloudErr) {
+        console.error('⚠️ Failed to delete from Cloudinary:', cloudErr.message);
+        // Continue with deletion even if Cloudinary deletion fails
+      }
+    }
+
+    delivery.attachments.splice(index, 1);
+    await delivery.save();
+
+    res.json({
+      success: true,
+      message: 'Receipt deleted successfully',
+      data: delivery
+    });
+  } catch (err) {
+    console.error('Delete receipt error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete receipt',
+      error: err.message
+    });
+  }
+});
 
 export default router;

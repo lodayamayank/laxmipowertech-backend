@@ -104,8 +104,11 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
       items: items,
       status: deliveryStatus,  // ✅ Use mapped status instead of hardcoded 'Pending'
       type: 'PO',
-      createdBy: purchaseOrder.requestedBy
+      createdBy: purchaseOrder.requestedBy,
+      attachments: purchaseOrder.attachments || []  // ✅ SYNC ATTACHMENTS from Intent PO to Upcoming Deliveries
     };
+    
+    console.log('📎 Syncing attachments:', deliveryData.attachments.length, 'files');
 
     const existing = await UpcomingDelivery.findOne({ st_id: purchaseOrder.purchaseOrderId });
     

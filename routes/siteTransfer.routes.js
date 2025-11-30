@@ -60,7 +60,8 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
       items: items,
       status: deliveryStatus,  // ✅ Use mapped status instead of hardcoded 'Pending'
       type: 'ST',
-      createdBy: siteTransfer.requestedBy
+      createdBy: siteTransfer.requestedBy,
+      attachments: siteTransfer.attachments || []  // ✅ SYNC ATTACHMENTS from Site Transfer to Upcoming Deliveries
     };
 
     const existing = await UpcomingDelivery.findOne({ st_id: siteTransfer.siteTransferId });
