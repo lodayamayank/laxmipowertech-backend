@@ -14,6 +14,7 @@ import attendanceNotesRoutes from './routes/attendanceNotes.routes.js';
 import leaveRoutes from './routes/leaves.routes.js';
 import reimbursementRoutes from './routes/reimbursement.routes.js';
 import salaryRoutes from './routes/salary.routes.js';
+import salarySlipRoutes from './routes/salarySlip.js';
 dotenv.config();
 const app = express();
 
@@ -67,6 +68,7 @@ app.use('/api/attendanceNotes', attendanceNotesRoutes);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/salary', salaryRoutes);
+app.use('/api/salary-slips', salarySlipRoutes);
 // DB Connection
 mongoose.connect(process.env.MONGO_URI, {
   useNewUrlParser: true,
