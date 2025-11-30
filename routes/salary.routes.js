@@ -4,6 +4,7 @@ import Attendance from '../models/Attendance.js';
 import Leave from '../models/Leave.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import mongoose from 'mongoose';
+import Reimbursement from '../models/Reimbursement.js';
 
 const router = express.Router();
 
@@ -20,14 +21,14 @@ const router = express.Router();
 function getWorkingDaysInMonth(year, month) {
   const daysInMonth = new Date(year, month, 0).getDate();
   let workingDays = 0;
-  
+
   for (let day = 1; day <= daysInMonth; day++) {
     const date = new Date(year, month - 1, day);
     if (date.getDay() !== 0) { // Exclude Sundays
       workingDays++;
     }
   }
-  
+
   return workingDays;
 }
 
@@ -35,7 +36,7 @@ function getWorkingDaysInMonth(year, month) {
 async function getAttendanceSummary(userId, year, month) {
   const startDate = new Date(year, month - 1, 1);
   startDate.setHours(0, 0, 0, 0);
-  
+
   const endDate = new Date(year, month, 0, 23, 59, 59, 999);
 
   // Get all attendance records for the month
@@ -58,7 +59,7 @@ async function getAttendanceSummary(userId, year, month) {
   // Calculate days
   const daysInMonth = new Date(year, month, 0).getDate();
   const workingDays = getWorkingDaysInMonth(year, month);
-  
+
   let presentDays = 0;
   let absentDays = 0;
   let halfDays = 0;
@@ -78,7 +79,7 @@ async function getAttendanceSummary(userId, year, month) {
     attendanceByDate[dateKey].push(record);
   });
 
-  
+
   for (let day = 1; day <= daysInMonth; day++) {
     const currentDate = new Date(year, month - 1, day);
     const dateKey = currentDate.toISOString().split('T')[0];
@@ -105,7 +106,7 @@ async function getAttendanceSummary(userId, year, month) {
         const leaveEnd = new Date(l.endDate);
         return currentDate >= leaveStart && currentDate <= leaveEnd;
       });
-      
+
       if (leave.type === 'paid') paidLeaveDays++;
       else if (leave.type === 'unpaid') unpaidLeaveDays++;
       else if (leave.type === 'sick') sickLeaveDays++;
@@ -155,7 +156,7 @@ async function getAttendanceSummary(userId, year, month) {
 function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
   const daysInMonth = new Date(year, month, 0).getDate();
   const workingDays = getWorkingDaysInMonth(year, month);
-  
+
   let presentDays = 0;
   let absentDays = 0;
   let halfDays = 0;
@@ -175,7 +176,7 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
     attendanceByDate[dateKey].push(record);
   });
 
-  
+
   for (let day = 1; day <= daysInMonth; day++) {
     const currentDate = new Date(year, month - 1, day);
     const dateKey = currentDate.toISOString().split('T')[0];
@@ -202,7 +203,7 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
         const leaveEnd = new Date(l.endDate);
         return currentDate >= leaveStart && currentDate <= leaveEnd;
       });
-      
+
       if (leave.type === 'paid') paidLeaveDays++;
       else if (leave.type === 'unpaid') unpaidLeaveDays++;
       else if (leave.type === 'sick') sickLeaveDays++;
@@ -248,6 +249,48 @@ function calculateAttendanceFromData(year, month, attendanceRecords, leaves) {
   };
 }
 
+// Helper function to get reimbursements summary for a user
+async function getReimbursementsSummary(userId, year, month) {
+  const startDate = new Date(year, month - 1, 1);
+  startDate.setHours(0, 0, 0, 0);
+
+  const endDate = new Date(year, month, 0, 23, 59, 59, 999);
+
+  try {
+    // Get all approved/paid reimbursements for the month
+    const reimbursements = await Reimbursement.find({
+      user: userId,
+      status: { $in: ['approved', 'paid'] },
+      submittedAt: { $gte: startDate, $lte: endDate }
+    }).lean();
+
+    const totalReimbursement = reimbursements.reduce(
+      (sum, reimb) => sum + reimb.totalAmount,
+      0
+    );
+
+    const details = reimbursements.map(r => ({
+      id: r._id,
+      amount: r.totalAmount,
+      status: r.status,
+      submittedAt: r.submittedAt,
+      items: r.items
+    }));
+
+    return {
+      totalReimbursement,
+      count: reimbursements.length,
+      details
+    };
+  } catch (err) {
+    console.error('Error fetching reimbursements:', err);
+    return {
+      totalReimbursement: 0,
+      count: 0,
+      details: []
+    };
+  }
+}
 // GET /api/salary/calculate - OPTIMIZED: Bulk-fetch version (3 queries instead of 44+)
 router.get('/calculate', authMiddleware, async (req, res) => {
   try {
@@ -257,7 +300,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
     }
 
     const { month, year, role, userId } = req.query;
-    
+
     const currentDate = new Date();
     const monthNum = parseInt(month) || currentDate.getMonth() + 1;
     const yearNum = parseInt(year) || currentDate.getFullYear();
@@ -287,7 +330,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
         user: { $in: userIds },
         date: { $gte: startDate, $lte: endDate }
       }).populate('leaveId', 'type').lean(),
-      
+
       Leave.find({
         user: { $in: userIds },
         status: 'approved',
@@ -322,12 +365,42 @@ router.get('/calculate', authMiddleware, async (req, res) => {
       const uid = user._id.toString();
       const userAttendance = attendanceByUser[uid] || [];
       const userLeaves = leavesByUser[uid] || [];
-      
+
       // Calculate attendance from pre-loaded data
       const attendanceSummary = calculateAttendanceFromData(
         yearNum, monthNum, userAttendance, userLeaves
       );
-      
+
+      // Enforce max 4 paid leaves per month (paid + sick + casual combined)
+      const MAX_PAID_LEAVES_PER_MONTH = 4;
+
+      const totalPaidTypeLeaves =
+        attendanceSummary.paidLeaveDays +
+        attendanceSummary.sickLeaveDays +
+        attendanceSummary.casualLeaveDays;
+
+      const extraPaidLeaves = Math.max(0, totalPaidTypeLeaves - MAX_PAID_LEAVES_PER_MONTH);
+
+      // These extra paid-type leaves become unpaid
+      const effectivePaidLeaveDays = totalPaidTypeLeaves - extraPaidLeaves;
+      const effectiveUnpaidLeaveDays = attendanceSummary.unpaidLeaveDays + extraPaidLeaves;
+
+      // Get reimbursements summary for this user and month
+      let reimbursementsSummary = {
+        totalReimbursement: 0,
+        count: 0,
+        details: []
+      };
+
+      try {
+        reimbursementsSummary = await getReimbursementsSummary(uid, yearNum, monthNum);
+      } catch (e) {
+        console.error(
+          `Failed to fetch reimbursements for user ${uid} (month ${monthNum}/${yearNum}):`,
+          e.message
+        );
+      }
+
       // Calculate salary based on CTC and salary type
       let grossSalary = 0;
       let perDaySalary = 0;
@@ -352,20 +425,21 @@ router.get('/calculate', authMiddleware, async (req, res) => {
         }
       }
 
-      // Calculate deductions
+      // Calculate deductions (using effective unpaid leaves)
       const absentDeduction = attendanceSummary.absentDays * perDaySalary;
       const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
-      const unpaidLeaveDeduction = attendanceSummary.unpaidLeaveDays * perDaySalary;
-      
-      const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
-      const netSalary = grossSalary - totalDeductions;
+      const unpaidLeaveDeduction = effectiveUnpaidLeaveDays * perDaySalary;
 
-      // Calculate payable days
-      const payableDays = attendanceSummary.presentDays + 
-                         (attendanceSummary.halfDays * 0.5) + 
-                         attendanceSummary.paidLeaveDays +
-                         attendanceSummary.sickLeaveDays +
-                         attendanceSummary.casualLeaveDays;
+      const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
+
+      // Net Salary = Gross - Deductions + Reimbursements
+      const netSalary = grossSalary - totalDeductions + reimbursementsSummary.totalReimbursement;
+
+      // Calculate payable days (using effective paid leaves)
+      const payableDays =
+        attendanceSummary.presentDays +
+        attendanceSummary.halfDays * 0.5 +
+        effectivePaidLeaveDays;
 
       salaryData.push({
         userId: user._id,
@@ -378,13 +452,21 @@ router.get('/calculate', authMiddleware, async (req, res) => {
         salaryType: user.salaryType || 'monthly',
         grossSalary: Math.round(grossSalary),
         perDaySalary: Math.round(perDaySalary),
-        attendance: attendanceSummary,
+        attendance: {
+          ...attendanceSummary,
+          effectivePaidLeaveDays,
+          effectiveUnpaidLeaveDays
+        },
         payableDays: Math.round(payableDays * 10) / 10,
         deductions: {
           absent: Math.round(absentDeduction),
           halfDay: Math.round(halfDayDeduction),
           unpaidLeave: Math.round(unpaidLeaveDeduction),
           total: Math.round(totalDeductions)
+        },
+        reimbursements: {
+          total: Math.round(reimbursementsSummary.totalReimbursement),
+          count: reimbursementsSummary.count
         },
         netSalary: Math.round(netSalary),
         month: monthNum,
@@ -423,8 +505,11 @@ router.get('/user/:userId', authMiddleware, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    const attendanceSummary = await getAttendanceSummary(userId, yearNum, monthNum);
-    
+    const [attendanceSummary, reimbursementsSummary] = await Promise.all([
+      getAttendanceSummary(userId, yearNum, monthNum),
+      getReimbursementsSummary(userId, yearNum, monthNum)
+    ]);
+
     let grossSalary = 0;
     let perDaySalary = 0;
 
@@ -443,51 +528,96 @@ router.get('/user/:userId', authMiddleware, async (req, res) => {
           grossSalary = perDaySalary * attendanceSummary.workingDays;
           break;
         default:
-          grossSalary = user.ctcAmount / 12;
-          perDaySalary = grossSalary / attendanceSummary.workingDays;
       }
+
+      const currentDate = new Date();
+      const monthNum = parseInt(month) || currentDate.getMonth() + 1;
+      const yearNum = parseInt(year) || currentDate.getFullYear();
+
+      const user = await User.findById(userId)
+        .populate('project', 'name')
+        .populate('assignedBranches', 'name')
+        .lean();
+
+      if (!user) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      const [attendanceSummary, reimbursementsSummary] = await Promise.all([
+        getAttendanceSummary(userId, yearNum, monthNum),
+        getReimbursementsSummary(userId, yearNum, monthNum)
+      ]);
+
+      let grossSalary = 0;
+      let perDaySalary = 0;
+
+      if (user.ctcAmount && user.ctcAmount > 0) {
+        switch (user.salaryType) {
+          case 'monthly':
+            grossSalary = user.ctcAmount / 12;
+            perDaySalary = grossSalary / attendanceSummary.workingDays;
+            break;
+          case 'weekly':
+            grossSalary = (user.ctcAmount / 52) * 4.33;
+            perDaySalary = grossSalary / attendanceSummary.workingDays;
+            break;
+          case 'daily':
+            perDaySalary = user.ctcAmount;
+            grossSalary = perDaySalary * attendanceSummary.workingDays;
+            break;
+          default:
+            grossSalary = user.ctcAmount / 12;
+            perDaySalary = grossSalary / attendanceSummary.workingDays;
+        }
+      }
+
+      const absentDeduction = attendanceSummary.absentDays * perDaySalary;
+      const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
+      const unpaidLeaveDeduction = attendanceSummary.unpaidLeaveDays * perDaySalary;
+
+      const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
+
+      // Net Salary = Gross - Deductions + Reimbursements
+      const netSalary = grossSalary - totalDeductions + reimbursementsSummary.totalReimbursement;
+
+      const payableDays = attendanceSummary.presentDays +
+        (attendanceSummary.halfDays * 0.5) +
+        attendanceSummary.paidLeaveDays +
+        attendanceSummary.sickLeaveDays +
+        attendanceSummary.casualLeaveDays;
+
+      res.json({
+        userId: user._id,
+        name: user.name,
+        username: user.username,
+        employeeId: user.employeeId || '-',
+        role: user.role,
+        department: user.department || '-',
+        ctcAmount: user.ctcAmount || 0,
+        salaryType: user.salaryType || 'monthly',
+        grossSalary: Math.round(grossSalary),
+        perDaySalary: Math.round(perDaySalary),
+        attendance: attendanceSummary,
+        payableDays: Math.round(payableDays * 10) / 10,
+        deductions: {
+          absent: Math.round(absentDeduction),
+          halfDay: Math.round(halfDayDeduction),
+          unpaidLeave: Math.round(unpaidLeaveDeduction),
+          total: Math.round(totalDeductions)
+        },
+        reimbursements: {
+          total: Math.round(reimbursementsSummary.totalReimbursement),
+          count: reimbursementsSummary.count,
+          details: reimbursementsSummary.details
+        },
+        netSalary: Math.round(netSalary),
+        month: monthNum,
+        year: yearNum
+      });
+    } catch (err) {
+      console.error('Error fetching user salary:', err);
+      res.status(500).json({ message: 'Failed to fetch salary', error: err.message });
     }
-
-    const absentDeduction = attendanceSummary.absentDays * perDaySalary;
-    const halfDayDeduction = attendanceSummary.halfDays * (perDaySalary * 0.5);
-    const unpaidLeaveDeduction = attendanceSummary.unpaidLeaveDays * perDaySalary;
-    
-    const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
-    const netSalary = grossSalary - totalDeductions;
-
-    const payableDays = attendanceSummary.presentDays + 
-                       (attendanceSummary.halfDays * 0.5) + 
-                       attendanceSummary.paidLeaveDays +
-                       attendanceSummary.sickLeaveDays +
-                       attendanceSummary.casualLeaveDays;
-
-    res.json({
-      userId: user._id,
-      name: user.name,
-      username: user.username,
-      employeeId: user.employeeId || '-',
-      role: user.role,
-      department: user.department || '-',
-      ctcAmount: user.ctcAmount || 0,
-      salaryType: user.salaryType || 'monthly',
-      grossSalary: Math.round(grossSalary),
-      perDaySalary: Math.round(perDaySalary),
-      attendance: attendanceSummary,
-      payableDays: Math.round(payableDays * 10) / 10,
-      deductions: {
-        absent: Math.round(absentDeduction),
-        halfDay: Math.round(halfDayDeduction),
-        unpaidLeave: Math.round(unpaidLeaveDeduction),
-        total: Math.round(totalDeductions)
-      },
-      netSalary: Math.round(netSalary),
-      month: monthNum,
-      year: yearNum
-    });
-  } catch (err) {
-    console.error('Error fetching user salary:', err);
-    res.status(500).json({ message: 'Failed to fetch salary', error: err.message });
-  }
-});
+  });
 
 export default router;
