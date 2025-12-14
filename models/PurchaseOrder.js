@@ -28,7 +28,8 @@ const PurchaseOrderSchema = new mongoose.Schema({
       uom: { type: String },
       remarks: { type: String },
       received_quantity: { type: Number, default: 0 },
-      is_received: { type: Boolean, default: false }
+      is_received: { type: Boolean, default: false },
+      vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' } // Vendor selection per material
     }
   ],
   status: { 

@@ -284,6 +284,7 @@ router.get('/', async (req, res) => {
     } : {};
 
     const orders = await PurchaseOrder.find(query)
+      .populate('materials.vendor', 'companyName contact mobile email') // Populate vendor for each material
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -350,7 +351,9 @@ router.delete('/all', async (req, res) => {
 // GET purchase order by ID
 router.get('/:id', async (req, res) => {
   try {
-    const order = await PurchaseOrder.findById(req.params.id);
+    const order = await PurchaseOrder.findById(req.params.id)
+      .populate('materials.vendor', 'companyName contact mobile email'); // Populate vendor for each material
+    
     if (!order) {
       return res.status(404).json({
         success: false,
@@ -400,7 +403,8 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       req.params.id,
       updateData,
       { new: true, runValidators: true }
-    );
+    )
+      .populate('materials.vendor', 'companyName contact mobile email'); // Populate vendor for each material
 
     if (!order) {
       return res.status(404).json({
