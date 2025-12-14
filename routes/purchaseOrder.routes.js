@@ -552,6 +552,50 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
   }
 });
 
+// TEMPORARY CLEANUP ENDPOINT - Remove after data is cleaned
+// DELETE /api/material/purchase-orders/cleanup-wrong-deliveries
+router.delete('/cleanup-wrong-deliveries', async (req, res) => {
+  try {
+    console.log('🧹 Starting cleanup of wrong Upcoming Deliveries...');
+    
+    // Delete all deliveries with wrong data patterns
+    const result = await UpcomingDelivery.deleteMany({
+      $or: [
+        // Deliveries with generic values (from old buggy code)
+        { from: "Vendor" },
+        { to: "Site" },
+        
+        // Deliveries without vendor info
+        { vendor_name: { $exists: false } },
+        { vendor_name: null },
+        { vendor_name: "" },
+        
+        // Wrong type for POs/Indents  
+        { type: "ST", source_type: { $in: ["PurchaseOrder", "Indent"] } },
+        
+        // Empty items (from photo upload bug)
+        { items: { $size: 0 } }
+      ]
+    });
+    
+    console.log(`✅ Cleanup complete: Deleted ${result.deletedCount} wrong deliveries`);
+    
+    res.json({
+      success: true,
+      message: `Successfully cleaned up ${result.deletedCount} wrong delivery entries`,
+      deletedCount: result.deletedCount,
+      details: 'Deleted deliveries with: generic vendor/site values, missing vendor info, wrong types, or empty items'
+    });
+  } catch (err) {
+    console.error('❌ Cleanup error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cleanup deliveries',
+      error: err.message
+    });
+  }
+});
+
 // DELETE purchase order
 router.delete('/:id', async (req, res) => {
   try {
