@@ -454,7 +454,6 @@ router.put('/:id/approve', async (req, res) => {
         st_id: purchaseOrder._id.toString(),
         source_type: 'PurchaseOrder',
         source_id: purchaseOrder.purchaseOrderId,
-        type: 'PO',  // Required field - PO for Purchase Order
         vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
         vendor_id: vendorId,
         delivery_site: purchaseOrder.deliverySite,
@@ -530,11 +529,9 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       });
     }
 
-    // ⚠️ DO NOT auto-sync on regular updates
-    // Sync only happens via the /approve endpoint when status changes to 'approved'
-    // This prevents pending orders from appearing in Upcoming Deliveries
-    // await syncToUpcomingDelivery(order);
-    console.log(`✅ PurchaseOrder ${order.purchaseOrderId} updated - NO sync (use approve endpoint for sync)`);
+    // ✅ Sync to UpcomingDelivery - Use local function for FULL sync (including quantity changes)
+    await syncToUpcomingDelivery(order);
+    console.log(`🔄 Synced PurchaseOrder ${order.purchaseOrderId} to UpcomingDelivery (FULL SYNC)`);
 
     res.json({
       success: true,
@@ -546,46 +543,6 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update purchase order',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-  }
-});
-
-// CLEANUP: Delete deliveries for pending/non-approved POs (utility endpoint)
-router.delete('/:id/cleanup-deliveries', async (req, res) => {
-  try {
-    const purchaseOrder = await PurchaseOrder.findById(req.params.id);
-    
-    if (!purchaseOrder) {
-      return res.status(404).json({
-        success: false,
-        message: 'Purchase order not found'
-      });
-    }
-    
-    // Delete any deliveries for this PO if status is not approved
-    if (purchaseOrder.status !== 'approved') {
-      const result = await UpcomingDelivery.deleteMany({ 
-        source_id: purchaseOrder.purchaseOrderId 
-      });
-      
-      return res.json({
-        success: true,
-        message: `Cleaned up ${result.deletedCount} delivery entries for pending PO`,
-        deletedCount: result.deletedCount
-      });
-    }
-    
-    res.json({
-      success: true,
-      message: 'PO is approved, no cleanup needed',
-      deletedCount: 0
-    });
-  } catch (err) {
-    console.error('Cleanup error:', err.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to cleanup deliveries',
       error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
