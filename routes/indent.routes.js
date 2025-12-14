@@ -488,26 +488,17 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
     await indent.save();
     console.log('✅ Indent record created in database:', indent._id);
 
-    // ✅ CREATE UPCOMING DELIVERY ENTRY
-    try {
-      const upcomingDelivery = new UpcomingDelivery({
-        st_id: indent._id.toString(),
-        transfer_number: indentId,
-        date: new Date(),
-        from: 'Vendor', // Default for PO
-        to: req.body.project || 'Site', // Use project from form
-        items: [], // Empty items initially, can be populated later
-        status: 'Pending',
-        type: 'PO', // Purchase Order type
-        createdBy: uploadedBy || 'system'
-      });
-      
-      await upcomingDelivery.save();
-      console.log('✅ UpcomingDelivery created:', upcomingDelivery._id);
-    } catch (deliveryErr) {
-      console.error('⚠️ Failed to create UpcomingDelivery:', deliveryErr);
-      // Don't fail the whole request if upcoming delivery creation fails
-    }
+    // ⚠️ DO NOT auto-create UpcomingDelivery on intent creation
+    // Deliveries should ONLY be created after admin approval with vendor grouping
+    // This prevents pending intents from appearing in Upcoming Deliveries
+    // See the /approve endpoint for proper delivery creation logic
+    console.log('✅ Indent created - waiting for admin approval before creating deliveries');
+    
+    // REMOVED: Auto-sync to UpcomingDelivery
+    // try {
+    //   const upcomingDelivery = new UpcomingDelivery({...});
+    //   await upcomingDelivery.save();
+    // } catch (deliveryErr) {...}
 
     // Return success response
     res.status(200).json({
