@@ -45,27 +45,26 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
     }));
 
     // ✅ CRITICAL FIX: Map SiteTransfer status to UpcomingDelivery status
-    // Approved → Approved (NOT Partial)
-    // Partial status is determined by received_quantity vs st_quantity, not by approval
+    // MUST match PO workflow: approved → Partial (UpcomingDelivery enum doesn't have 'Approved')
     // 🔧 CASE-INSENSITIVE: Handle both 'approved'/'Approved' and 'transferred'/'Transferred'
     const statusLower = (siteTransfer.status || '').toLowerCase();
     let deliveryStatus = 'Pending';
     if (statusLower === 'transferred') deliveryStatus = 'Transferred';
-    else if (statusLower === 'approved') deliveryStatus = 'Approved';  // ✅ FIX: Approved, not Partial
+    else if (statusLower === 'approved') deliveryStatus = 'Partial';  // ✅ CRITICAL: Use 'Partial' not 'Approved' (matches PO workflow)
     else if (statusLower === 'pending') deliveryStatus = 'Pending';
-    else if (statusLower === 'cancelled') deliveryStatus = 'Cancelled';
+    else if (statusLower === 'cancelled') deliveryStatus = 'Pending';  // ✅ Cancelled also maps to Pending
     
     console.log(`🔄 syncToUpcomingDelivery: ST ${siteTransfer.siteTransferId} - status='${siteTransfer.status}' → deliveryStatus='${deliveryStatus}'`);
     
-    // ✅ Check if any materials are partially received (override to Partial if applicable)
-    const hasPartiallyReceived = siteTransfer.materials.some(mat => {
+    // ✅ Check if all materials are fully received (override to Transferred)
+    const allFullyReceived = siteTransfer.materials.every(mat => {
       const received = mat.received_quantity || 0;
       const total = mat.quantity || 0;
-      return received > 0 && received < total;
+      return received >= total && total > 0;
     });
     
-    if (hasPartiallyReceived && deliveryStatus === 'Approved') {
-      deliveryStatus = 'Partial';  // ✅ Only use Partial when materials are actually partially received
+    if (allFullyReceived && siteTransfer.materials.length > 0) {
+      deliveryStatus = 'Transferred';  // ✅ All items received = Transferred
     }
 
     const deliveryData = {
