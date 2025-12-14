@@ -51,6 +51,7 @@ router.get("/", auth, async (req, res) => {
       .populate("branch", "name")
       .populate("requestedBy", "name role email")
       .populate("approvedBy", "name role")
+      .populate("items.vendor", "companyName contact mobile email") // Populate vendor for each item
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -245,7 +246,8 @@ router.get("/:id", auth, async (req, res) => {
     .populate("project", "name")
     .populate("branch", "name")
     .populate("requestedBy", "name role")
-    .populate("approvedBy", "name role");
+    .populate("approvedBy", "name role")
+    .populate("items.vendor", "companyName contact mobile email"); // Populate vendor for each item
 
   if (!indent) {
     return res.status(404).json({ 

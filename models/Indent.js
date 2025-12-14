@@ -20,6 +20,7 @@ const IndentSchema = new mongoose.Schema(
         quantity: { type: Number },
         unit: { type: String, default: "pcs" },
         remarks: { type: String },
+        vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' } // Vendor selection per item
       },
     ],
 
