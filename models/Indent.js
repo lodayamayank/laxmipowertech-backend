@@ -17,6 +17,10 @@ const IndentSchema = new mongoose.Schema(
     items: [
       {
         name: { type: String },
+        category: { type: String },  // ✅ Add category field
+        subCategory: { type: String },  // ✅ Add subCategory field
+        subCategory1: { type: String },  // ✅ Add subCategory1 field
+        subCategory2: { type: String },  // ✅ Add subCategory2 field
         quantity: { type: Number },
         unit: { type: String, default: "pcs" },
         remarks: { type: String },

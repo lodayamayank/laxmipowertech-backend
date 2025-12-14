@@ -228,11 +228,15 @@ router.put("/:id/approve", auth, async (req, res) => {
         source_type: 'Indent',
         source_id: indent.indentId,  // Base Intent ID (for tracking)
         transfer_number: derivedDeliveryId,  // Vendor-specific ID with suffix
+        date: new Date(),
+        from: group.vendorInfo?.companyName || 'Vendor/Supplier',  // ✅ Vendor name as 'From'
+        to: indent.branch?.name || indent.project?.name || 'N/A',  // ✅ Delivery site as 'To'
         type: 'PO',  // REQUIRED field per UpcomingDelivery schema - DO NOT REMOVE
         vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
         vendor_id: vendorId,
         delivery_site: indent.branch?.name || 'N/A',
         requested_by: indent.requestedBy?.name || 'Unknown',
+        createdBy: indent.requestedBy?.name || 'Unknown',  // ✅ Add createdBy field
         items: deliveryItems,
         status: 'Pending',
         created_date: new Date()

@@ -471,11 +471,15 @@ router.put('/:id/approve', async (req, res) => {
           source_type: 'PurchaseOrder',
           source_id: purchaseOrder.purchaseOrderId,  // Base PO ID (for tracking)
           transfer_number: derivedDeliveryId,  // Vendor-specific ID with suffix
+          date: purchaseOrder.requestDate || new Date(),
+          from: group.vendorInfo?.companyName || 'Vendor/Supplier',  // ✅ Vendor name as 'From'
+          to: purchaseOrder.deliverySite || 'N/A',  // ✅ Delivery site as 'To'
           type: 'PO',  // REQUIRED field - DO NOT REMOVE (schema validation)
           vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
           vendor_id: vendorId,
           delivery_site: purchaseOrder.deliverySite || 'N/A',
           requested_by: purchaseOrder.requestedBy || 'Unknown',
+          createdBy: purchaseOrder.requestedBy || 'Unknown',  // ✅ Add createdBy field
           items: items,
           status: 'Pending',
           created_date: new Date(),
