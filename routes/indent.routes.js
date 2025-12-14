@@ -211,7 +211,11 @@ router.put("/:id/approve", auth, async (req, res) => {
       const deliveryItems = group.items.map(item => ({
         itemId: item._id.toString(),
         name: item.name,
+        category: item.category || '',  // ✅ Add for admin detail view
+        sub_category: item.subCategory || '',  // ✅ Add for admin detail view
+        sub_category1: item.subCategory1 || '',  // ✅ Add for admin detail view
         quantity: item.quantity,
+        st_quantity: item.quantity,  // ✅ Required for "Requested" column in admin
         uom: item.unit || 'pcs',
         received_quantity: 0,
         is_received: false,

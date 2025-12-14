@@ -454,7 +454,10 @@ router.put('/:id/approve', async (req, res) => {
           itemId: mat._id.toString(),
           name: mat.itemName,
           category: mat.category || '',
+          sub_category: mat.subCategory || '',  // ✅ Add for admin detail view
+          sub_category1: mat.subCategory1 || '',  // ✅ Add for admin detail view
           quantity: mat.quantity,
+          st_quantity: mat.quantity,  // ✅ Required for "Requested" column in admin
           uom: mat.uom || 'pcs',  // Default to 'pcs' if not specified
           received_quantity: mat.received_quantity || 0,
           is_received: mat.is_received || false,
