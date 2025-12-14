@@ -390,33 +390,46 @@ router.put('/:id/approve', async (req, res) => {
       });
     }
     
-    // Update status to approved
-    purchaseOrder.status = 'approved';
-    await purchaseOrder.save();
-    
-    console.log('✅ Purchase order approved:', purchaseOrder.purchaseOrderId);
+    console.log('✅ Approving Purchase order:', purchaseOrder.purchaseOrderId);
     console.log('📦 Materials count:', purchaseOrder.materials?.length || 0);
     
-    // Check if all materials have vendors assigned
+    // ✅ Check if materials have vendors assigned BEFORE saving approval
     const materialsWithoutVendor = purchaseOrder.materials.filter(m => !m.vendor);
     if (materialsWithoutVendor.length > 0) {
       console.warn('⚠️ Materials without vendor:', materialsWithoutVendor.length);
-      return res.status(400).json({
-        success: false,
-        message: `Cannot approve: ${materialsWithoutVendor.length} material(s) do not have a vendor assigned. Please assign vendors to all materials before approval.`,
+      console.warn('⚠️ Materials:', materialsWithoutVendor.map(m => m.itemName));
+      
+      // ✅ OPTION 1: Allow approval but warn that deliveries won't be created
+      // Update status to approved anyway
+      purchaseOrder.status = 'approved';
+      await purchaseOrder.save();
+      
+      return res.status(200).json({
+        success: true,
+        message: `Purchase order approved, but ${materialsWithoutVendor.length} material(s) do not have vendors assigned. Assign vendors to create delivery entries.`,
+        warning: true,
+        data: purchaseOrder,
         materialsWithoutVendor: materialsWithoutVendor.map(m => m.itemName)
       });
     }
     
-    // Group materials by vendor
-    const vendorGroups = {};
+    // Update status to approved
+    purchaseOrder.status = 'approved';
+    await purchaseOrder.save();
+    console.log('✅ Purchase order approved:', purchaseOrder.purchaseOrderId);
     
-    purchaseOrder.materials.forEach((material, index) => {
-      const vendorId = material.vendor?._id?.toString() || 'no-vendor';
+    // Group materials by vendor (only materials WITH vendors)
+    const vendorGroups = {};
+    const materialsWithVendors = purchaseOrder.materials.filter(m => m.vendor);
+    
+    console.log(`📊 Materials with vendors: ${materialsWithVendors.length}/${purchaseOrder.materials.length}`);
+    
+    materialsWithVendors.forEach((material, index) => {
+      const vendorId = material.vendor._id.toString();
       
       if (!vendorGroups[vendorId]) {
         vendorGroups[vendorId] = {
-          vendorInfo: material.vendor || null,
+          vendorInfo: material.vendor,
           materials: []
         };
       }
@@ -431,52 +444,58 @@ router.put('/:id/approve', async (req, res) => {
     
     // Create separate UpcomingDelivery for each vendor
     const createdDeliveries = [];
+    const errors = [];
     
     for (const [vendorId, group] of Object.entries(vendorGroups)) {
-      if (vendorId === 'no-vendor') {
-        console.log('⚠️ Skipping materials without vendor');
-        continue;
+      try {
+        const items = group.materials.map(mat => ({
+          itemId: mat._id.toString(),
+          name: mat.itemName,
+          category: mat.category || '',
+          quantity: mat.quantity,
+          uom: mat.uom || 'pcs',  // Default to 'pcs' if not specified
+          received_quantity: mat.received_quantity || 0,
+          is_received: mat.is_received || false,
+          remarks: mat.remarks || ''
+        }));
+        
+        // Create delivery entry for this vendor
+        const delivery = new UpcomingDelivery({
+          st_id: purchaseOrder._id.toString(),
+          source_type: 'PurchaseOrder',
+          source_id: purchaseOrder.purchaseOrderId,
+          type: 'PO',  // REQUIRED field - DO NOT REMOVE (schema validation)
+          vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
+          vendor_id: vendorId,
+          delivery_site: purchaseOrder.deliverySite || 'N/A',
+          requested_by: purchaseOrder.requestedBy || 'Unknown',
+          items: items,
+          status: 'Pending',
+          created_date: new Date(),
+          expected_delivery: purchaseOrder.requestDate || new Date()
+        });
+        
+        await delivery.save();
+        createdDeliveries.push(delivery);
+        
+        console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${items.length} materials)`);
+      } catch (deliveryErr) {
+        console.error(`❌ Failed to create delivery for vendor ${vendorId}:`, deliveryErr.message);
+        errors.push({
+          vendorId,
+          vendorName: group.vendorInfo?.companyName,
+          error: deliveryErr.message
+        });
       }
-      
-      const items = group.materials.map(mat => ({
-        itemId: mat._id.toString(),
-        name: mat.itemName,
-        category: mat.category,
-        quantity: mat.quantity,
-        uom: mat.uom,
-        received_quantity: mat.received_quantity || 0,
-        is_received: mat.is_received || false,
-        remarks: mat.remarks
-      }));
-      
-      // Create delivery entry for this vendor
-      const delivery = new UpcomingDelivery({
-        st_id: purchaseOrder._id.toString(),
-        source_type: 'PurchaseOrder',
-        source_id: purchaseOrder.purchaseOrderId,
-        type: 'PO',  // REQUIRED field - DO NOT REMOVE (schema validation)
-        vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
-        vendor_id: vendorId,
-        delivery_site: purchaseOrder.deliverySite,
-        requested_by: purchaseOrder.requestedBy,
-        items: items,
-        status: 'Pending',
-        created_date: new Date(),
-        expected_delivery: purchaseOrder.requestDate
-      });
-      
-      await delivery.save();
-      createdDeliveries.push(delivery);
-      
-      console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${items.length} materials)`);
     }
     
     res.json({
       success: true,
-      message: `Purchase order approved and ${createdDeliveries.length} delivery entries created`,
+      message: `Purchase order approved and ${createdDeliveries.length} delivery entries created${errors.length > 0 ? ` (${errors.length} failed)` : ''}`,
       data: {
         purchaseOrder,
-        deliveries: createdDeliveries
+        deliveries: createdDeliveries,
+        errors: errors.length > 0 ? errors : undefined
       }
     });
   } catch (err) {
