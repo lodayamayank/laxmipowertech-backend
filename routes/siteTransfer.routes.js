@@ -45,11 +45,24 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
     }));
 
     // ✅ CRITICAL FIX: Map SiteTransfer status to UpcomingDelivery status
+    // Approved → Approved (NOT Partial)
+    // Partial status is determined by received_quantity vs st_quantity, not by approval
     let deliveryStatus = 'Pending';
     if (siteTransfer.status === 'transferred') deliveryStatus = 'Transferred';
-    else if (siteTransfer.status === 'approved') deliveryStatus = 'Partial';
+    else if (siteTransfer.status === 'approved') deliveryStatus = 'Approved';  // ✅ FIX: Approved, not Partial
     else if (siteTransfer.status === 'pending') deliveryStatus = 'Pending';
     else if (siteTransfer.status === 'cancelled') deliveryStatus = 'Cancelled';
+    
+    // ✅ Check if any materials are partially received (override to Partial if applicable)
+    const hasPartiallyReceived = siteTransfer.materials.some(mat => {
+      const received = mat.received_quantity || 0;
+      const total = mat.quantity || 0;
+      return received > 0 && received < total;
+    });
+    
+    if (hasPartiallyReceived && deliveryStatus === 'Approved') {
+      deliveryStatus = 'Partial';  // ✅ Only use Partial when materials are actually partially received
+    }
 
     const deliveryData = {
       st_id: siteTransfer.siteTransferId,
