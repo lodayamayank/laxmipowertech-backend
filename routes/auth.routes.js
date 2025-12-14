@@ -22,7 +22,7 @@ router.post('/login', async (req, res) => {
     // ✅ Normalize username (trim + lowercase)
     username = username.trim().toLowerCase();
 
-    const user = await User.findOne({ username });
+    const user = await User.findOne({ username }).populate('assignedBranches', 'name');
     if (!user) {
       console.log("❌ No user found for:", username);
       return res.status(401).json({ message: 'Invalid credentials' });
@@ -55,6 +55,7 @@ router.post('/login', async (req, res) => {
         name: user.name,
         role: user.role,
         username: user.username,
+        assignedBranches: user.assignedBranches || [],
       },
     });
   } catch (err) {
