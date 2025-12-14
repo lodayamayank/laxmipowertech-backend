@@ -26,6 +26,7 @@ import materialCatalogRoutes from './routes/materialCatalog.routes.js';
 import siteTransferRoutes from './routes/siteTransfer.routes.js';
 import purchaseOrderRoutes from './routes/purchaseOrder.routes.js';
 import upcomingDeliveryRoutes from './routes/upcomingDelivery.routes.js';
+import migrationRoutes from './routes/migration.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
