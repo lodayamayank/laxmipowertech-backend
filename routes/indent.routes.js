@@ -165,6 +165,17 @@ router.put("/:id/approve", auth, async (req, res) => {
     console.log('✅ Indent approved:', indent.indentId);
     console.log('📦 Items count:', indent.items?.length || 0);
     
+    // Check if all items have vendors assigned
+    const itemsWithoutVendor = indent.items.filter(item => !item.vendor);
+    if (itemsWithoutVendor.length > 0) {
+      console.warn('⚠️ Items without vendor:', itemsWithoutVendor.length);
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve: ${itemsWithoutVendor.length} item(s) do not have a vendor assigned. Please assign vendors to all items before approval.`,
+        itemsWithoutVendor: itemsWithoutVendor.map(item => item.name)
+      });
+    }
+    
     // Group items by vendor
     const vendorGroups = {};
     

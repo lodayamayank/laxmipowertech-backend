@@ -397,6 +397,17 @@ router.put('/:id/approve', async (req, res) => {
     console.log('✅ Purchase order approved:', purchaseOrder.purchaseOrderId);
     console.log('📦 Materials count:', purchaseOrder.materials?.length || 0);
     
+    // Check if all materials have vendors assigned
+    const materialsWithoutVendor = purchaseOrder.materials.filter(m => !m.vendor);
+    if (materialsWithoutVendor.length > 0) {
+      console.warn('⚠️ Materials without vendor:', materialsWithoutVendor.length);
+      return res.status(400).json({
+        success: false,
+        message: `Cannot approve: ${materialsWithoutVendor.length} material(s) do not have a vendor assigned. Please assign vendors to all materials before approval.`,
+        materialsWithoutVendor: materialsWithoutVendor.map(m => m.itemName)
+      });
+    }
+    
     // Group materials by vendor
     const vendorGroups = {};
     
@@ -469,10 +480,13 @@ router.put('/:id/approve', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Approve purchase order error:', err.message);
+    console.error('❌ Stack trace:', err.stack);
+    console.error('❌ Error details:', err);
     res.status(500).json({
       success: false,
       message: 'Failed to approve purchase order',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });

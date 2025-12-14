@@ -5,32 +5,63 @@ const UpcomingDeliverySchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
+  source_type: {
+    type: String,
+    enum: ['SiteTransfer', 'PurchaseOrder', 'Indent'],
+    default: 'SiteTransfer'
+  },
+  source_id: {
+    type: String  // PO ID or Indent ID
+  },
   transfer_number: { 
     type: String, 
-    required: true,
-    unique: true 
+    unique: true,
+    sparse: true  // Allow null for POs/Indents
   },
   date: { 
     type: Date, 
     default: Date.now 
   },
+  created_date: {
+    type: Date,
+    default: Date.now
+  },
+  expected_delivery: {
+    type: Date
+  },
+  // For Site Transfers
   from: { 
-    type: String, 
-    required: true 
+    type: String
   },
   to: { 
-    type: String, 
-    required: true 
+    type: String
+  },
+  // For Purchase Orders / Indents
+  vendor_name: {
+    type: String
+  },
+  vendor_id: {
+    type: String
+  },
+  delivery_site: {
+    type: String
+  },
+  requested_by: {
+    type: String
   },
   items: [
     {
       itemId: { type: String, required: true },
+      name: { type: String },  // For PO/Indent
       category: { type: String },
       sub_category: { type: String },
       sub_category1: { type: String },
-      st_quantity: { type: Number, required: true },
+      st_quantity: { type: Number },  // For Site Transfers
+      quantity: { type: Number },  // For PO/Indent
+      uom: { type: String },  // For PO/Indent
       received_quantity: { type: Number, default: 0 },
-      is_received: { type: Boolean, default: false }
+      is_received: { type: Boolean, default: false },
+      remarks: { type: String }
     }
   ],
   status: { 
@@ -45,8 +76,7 @@ const UpcomingDeliverySchema = new mongoose.Schema({
     required: true
   },
   createdBy: { 
-    type: String, 
-    required: true 
+    type: String
   },
   attachments: [
     {
