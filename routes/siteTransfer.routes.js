@@ -292,7 +292,7 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
     }
 
     // ✅ CRITICAL: Only sync to Upcoming Delivery when status is 'approved' or 'transferred'
-    // This matches the Intent lifecycle: pending → NOT in Upcoming → approved → IN Upcoming Deliveries
+    // This matches the Intent lifecycle exactly: pending → NOT synced → approved → SYNCED to Upcoming Deliveries
     const shouldSync = transfer.status === 'approved' || transfer.status === 'transferred';
     
     if (shouldSync) {
@@ -301,12 +301,12 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
     } else {
       console.log(`⏸️ Skipping sync for SiteTransfer ${transfer.siteTransferId} (status: ${transfer.status} - not approved yet)`);
       
-      // ✅ If status changed FROM approved/transferred TO pending/cancelled, delete from UpcomingDelivery
+      // ✅ Cleanup: If status changed FROM approved/transferred TO pending/cancelled, remove from UpcomingDelivery
       if (transfer.status === 'pending' || transfer.status === 'cancelled') {
         const existing = await UpcomingDelivery.findOne({ st_id: transfer.siteTransferId });
         if (existing) {
           await UpcomingDelivery.findByIdAndDelete(existing._id);
-          console.log(`🗑️ Removed SiteTransfer ${transfer.siteTransferId} from UpcomingDelivery (status reverted to ${transfer.status})`);
+          console.log(`�️ Removed SiteTransfer ${transfer.siteTransferId} from UpcomingDelivery (status reverted to ${transfer.status})`);
         }
       }
     }
