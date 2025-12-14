@@ -221,6 +221,7 @@ router.put("/:id/approve", auth, async (req, res) => {
         st_id: indent._id.toString(),
         source_type: 'Indent',
         source_id: indent.indentId,
+        type: 'PO',  // Required field - using 'PO' for intents as well
         vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
         vendor_id: vendorId,
         delivery_site: indent.branch?.name || 'N/A',

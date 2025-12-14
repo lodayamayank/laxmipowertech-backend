@@ -454,6 +454,7 @@ router.put('/:id/approve', async (req, res) => {
         st_id: purchaseOrder._id.toString(),
         source_type: 'PurchaseOrder',
         source_id: purchaseOrder.purchaseOrderId,
+        type: 'PO',  // Required field - PO for Purchase Order
         vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
         vendor_id: vendorId,
         delivery_site: purchaseOrder.deliverySite,
