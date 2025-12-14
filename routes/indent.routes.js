@@ -488,26 +488,33 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
     await indent.save();
     console.log('✅ Indent record created in database:', indent._id);
 
-    // ✅ CREATE UPCOMING DELIVERY ENTRY
-    try {
-      const upcomingDelivery = new UpcomingDelivery({
-        st_id: indent._id.toString(),
-        transfer_number: indentId,
-        date: new Date(),
-        from: 'Vendor', // Default for PO
-        to: req.body.project || 'Site', // Use project from form
-        items: [], // Empty items initially, can be populated later
-        status: 'Pending',
-        type: 'PO', // Purchase Order type
-        createdBy: uploadedBy || 'system'
-      });
-      
-      await upcomingDelivery.save();
-      console.log('✅ UpcomingDelivery created:', upcomingDelivery._id);
-    } catch (deliveryErr) {
-      console.error('⚠️ Failed to create UpcomingDelivery:', deliveryErr);
-      // Don't fail the whole request if upcoming delivery creation fails
-    }
+    // ⚠️ CRITICAL: DO NOT auto-create UpcomingDelivery on intent creation
+    // 
+    // WHY THIS CODE IS DISABLED:
+    // 1. Creates deliveries BEFORE admin approval (violates requirement)
+    // 2. Uses generic "Vendor" and "Site" values (not actual vendor names)
+    // 3. Items array is empty (no material information)
+    // 4. NO vendor grouping (violates requirement for vendor-wise grouping)
+    // 5. Causes pending intents to appear in Upcoming Deliveries prematurely
+    // 
+    // CORRECT FLOW:
+    // Client creates intent → Admin assigns vendors → Admin approves →
+    // /approve endpoint groups materials by vendor → Creates vendor-wise deliveries
+    // 
+    console.log('✅ Indent created - awaiting admin approval for delivery creation');
+    
+    // INTENTIONALLY DISABLED - Do not re-enable this code
+    // try {
+    //   const upcomingDelivery = new UpcomingDelivery({
+    //     st_id: indent._id.toString(),
+    //     transfer_number: indentId,
+    //     from: 'Vendor',  // ❌ Generic value
+    //     to: req.body.project || 'Site',  // ❌ Generic value
+    //     items: [],  // ❌ Empty array
+    //     type: 'PO'
+    //   });
+    //   await upcomingDelivery.save();
+    // } catch (deliveryErr) {...}
 
     // Return success response
     res.status(200).json({
