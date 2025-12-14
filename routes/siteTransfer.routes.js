@@ -129,7 +129,11 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     });
 
     await siteTransfer.save();
-    await syncToUpcomingDelivery(siteTransfer);
+    
+    // ✅ DO NOT sync to Upcoming Delivery on creation
+    // Sync only happens after admin approval (in update endpoint)
+    console.log(`✅ Site transfer created: ${siteTransferId} (status: ${siteTransfer.status})`);
+    console.log(`⏳ Waiting for admin approval before creating Upcoming Delivery`);
 
     res.status(201).json({
       success: true,
