@@ -529,9 +529,12 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       });
     }
 
-    // ✅ Sync to UpcomingDelivery - Use local function for FULL sync (including quantity changes)
-    await syncToUpcomingDelivery(order);
-    console.log(`🔄 Synced PurchaseOrder ${order.purchaseOrderId} to UpcomingDelivery (FULL SYNC)`);
+    // ⚠️ CRITICAL: DO NOT auto-sync on regular updates
+    // WHY: syncToUpcomingDelivery() creates GENERIC deliveries without vendor grouping
+    //      This causes pending intents to appear in Upcoming Deliveries prematurely
+    // SOLUTION: Only the /approve endpoint creates deliveries with proper vendor grouping
+    // await syncToUpcomingDelivery(order);  // ❌ DISABLED - see /approve endpoint
+    console.log(`✅ PurchaseOrder ${order.purchaseOrderId} updated - NO sync (deliveries created only on approval)`);
 
     res.json({
       success: true,
