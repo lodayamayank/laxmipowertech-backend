@@ -392,6 +392,11 @@ router.put('/:id/approve', async (req, res) => {
     
     console.log('✅ Approving Purchase order:', purchaseOrder.purchaseOrderId);
     console.log('📦 Materials count:', purchaseOrder.materials?.length || 0);
+    console.log('👥 Materials with vendors:', purchaseOrder.materials.map(m => ({
+      itemName: m.itemName,
+      hasVendor: !!m.vendor,
+      vendorName: m.vendor?.companyName || 'NO VENDOR'
+    })));
     
     // ✅ Check if materials have vendors assigned BEFORE saving approval
     const materialsWithoutVendor = purchaseOrder.materials.filter(m => !m.vendor);
