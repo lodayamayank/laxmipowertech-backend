@@ -442,11 +442,13 @@ router.put('/:id/approve', async (req, res) => {
     
     console.log('🏭 Vendor groups:', Object.keys(vendorGroups).length);
     
-    // Create separate UpcomingDelivery for each vendor
+    // Create separate UpcomingDelivery for each vendor with derived IDs
     const createdDeliveries = [];
     const errors = [];
+    const vendorEntries = Object.entries(vendorGroups);
+    let vendorSequence = 1;
     
-    for (const [vendorId, group] of Object.entries(vendorGroups)) {
+    for (const [vendorId, group] of vendorEntries) {
       try {
         const items = group.materials.map(mat => ({
           itemId: mat._id.toString(),
@@ -459,11 +461,16 @@ router.put('/:id/approve', async (req, res) => {
           remarks: mat.remarks || ''
         }));
         
+        // ✅ Generate vendor-specific delivery ID with suffix: PO20251214-DS934-01, -02, -03
+        const vendorSuffix = vendorSequence.toString().padStart(2, '0');
+        const derivedDeliveryId = `${purchaseOrder.purchaseOrderId}-${vendorSuffix}`;
+        
         // Create delivery entry for this vendor
         const delivery = new UpcomingDelivery({
           st_id: purchaseOrder._id.toString(),
           source_type: 'PurchaseOrder',
-          source_id: purchaseOrder.purchaseOrderId,
+          source_id: purchaseOrder.purchaseOrderId,  // Base PO ID (for tracking)
+          transfer_number: derivedDeliveryId,  // Vendor-specific ID with suffix
           type: 'PO',  // REQUIRED field - DO NOT REMOVE (schema validation)
           vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
           vendor_id: vendorId,
@@ -477,8 +484,9 @@ router.put('/:id/approve', async (req, res) => {
         
         await delivery.save();
         createdDeliveries.push(delivery);
+        vendorSequence++;
         
-        console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${items.length} materials)`);
+        console.log(`✅ Created delivery ${derivedDeliveryId} for vendor: ${group.vendorInfo?.companyName} (${items.length} materials)`);
       } catch (deliveryErr) {
         console.error(`❌ Failed to create delivery for vendor ${vendorId}:`, deliveryErr.message);
         errors.push({

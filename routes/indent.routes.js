@@ -197,10 +197,12 @@ router.put("/:id/approve", auth, async (req, res) => {
     
     console.log('🏭 Vendor groups:', Object.keys(vendorGroups).length);
     
-    // Create separate UpcomingDelivery for each vendor
+    // Create separate UpcomingDelivery for each vendor with derived IDs
     const createdDeliveries = [];
+    const vendorEntries = Object.entries(vendorGroups);
+    let vendorSequence = 1;
     
-    for (const [vendorId, group] of Object.entries(vendorGroups)) {
+    for (const [vendorId, group] of vendorEntries) {
       if (vendorId === 'no-vendor') {
         console.log('⚠️ Skipping items without vendor');
         continue;
@@ -216,11 +218,16 @@ router.put("/:id/approve", auth, async (req, res) => {
         remarks: item.remarks
       }));
       
+      // ✅ Generate vendor-specific delivery ID with suffix: PO20251214-DS934-01, -02, -03
+      const vendorSuffix = vendorSequence.toString().padStart(2, '0');
+      const derivedDeliveryId = `${indent.indentId}-${vendorSuffix}`;
+      
       // Create delivery entry for this vendor
       const delivery = new UpcomingDelivery({
         st_id: indent._id.toString(),
         source_type: 'Indent',
-        source_id: indent.indentId,
+        source_id: indent.indentId,  // Base Intent ID (for tracking)
+        transfer_number: derivedDeliveryId,  // Vendor-specific ID with suffix
         type: 'PO',  // REQUIRED field per UpcomingDelivery schema - DO NOT REMOVE
         vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
         vendor_id: vendorId,
@@ -233,8 +240,9 @@ router.put("/:id/approve", auth, async (req, res) => {
       
       await delivery.save();
       createdDeliveries.push(delivery);
+      vendorSequence++;
       
-      console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${deliveryItems.length} items)`);
+      console.log(`✅ Created delivery ${derivedDeliveryId} for vendor: ${group.vendorInfo?.companyName} (${deliveryItems.length} items)`);
     }
     
     // Sync status to UpcomingDelivery if needed
