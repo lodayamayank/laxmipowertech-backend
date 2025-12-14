@@ -141,6 +141,120 @@ router.put("/:id/status", auth, async (req, res) => {
   }
 });
 
+// ✅ APPROVE INDENT with vendor grouping
+router.put("/:id/approve", auth, async (req, res) => {
+  try {
+    const indent = await Indent.findById(req.params.id)
+      .populate('items.vendor', 'companyName contact mobile email')
+      .populate('project', 'name')
+      .populate('branch', 'name')
+      .populate('requestedBy', 'name role');
+    
+    if (!indent) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Indent not found" 
+      });
+    }
+    
+    // Update status to approved
+    indent.status = 'approved';
+    indent.approvedBy = req.user.id;
+    await indent.save();
+    
+    console.log('✅ Indent approved:', indent.indentId);
+    console.log('📦 Items count:', indent.items?.length || 0);
+    
+    // Group items by vendor
+    const vendorGroups = {};
+    
+    indent.items.forEach((item, index) => {
+      const vendorId = item.vendor?._id?.toString() || 'no-vendor';
+      
+      if (!vendorGroups[vendorId]) {
+        vendorGroups[vendorId] = {
+          vendorInfo: item.vendor || null,
+          items: []
+        };
+      }
+      
+      vendorGroups[vendorId].items.push({
+        ...item.toObject(),
+        originalIndex: index
+      });
+    });
+    
+    console.log('🏭 Vendor groups:', Object.keys(vendorGroups).length);
+    
+    // Create separate UpcomingDelivery for each vendor
+    const createdDeliveries = [];
+    
+    for (const [vendorId, group] of Object.entries(vendorGroups)) {
+      if (vendorId === 'no-vendor') {
+        console.log('⚠️ Skipping items without vendor');
+        continue;
+      }
+      
+      const deliveryItems = group.items.map(item => ({
+        itemId: item._id.toString(),
+        name: item.name,
+        quantity: item.quantity,
+        uom: item.unit || 'pcs',
+        received_quantity: 0,
+        is_received: false,
+        remarks: item.remarks
+      }));
+      
+      // Create delivery entry for this vendor
+      const delivery = new UpcomingDelivery({
+        st_id: indent._id.toString(),
+        source_type: 'Indent',
+        source_id: indent.indentId,
+        vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
+        vendor_id: vendorId,
+        delivery_site: indent.branch?.name || 'N/A',
+        requested_by: indent.requestedBy?.name || 'Unknown',
+        items: deliveryItems,
+        status: 'Pending',
+        created_date: new Date()
+      });
+      
+      await delivery.save();
+      createdDeliveries.push(delivery);
+      
+      console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${deliveryItems.length} items)`);
+    }
+    
+    // Sync status to UpcomingDelivery if needed
+    try {
+      const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
+      if (delivery) {
+        delivery.status = 'Partial';
+        await delivery.save();
+        console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: Partial`);
+      }
+    } catch (syncErr) {
+      console.error('⚠️ Failed to sync status to UpcomingDelivery:', syncErr.message);
+    }
+    
+    res.json({ 
+      success: true,
+      message: `Indent approved and ${createdDeliveries.length} delivery entries created`,
+      data: {
+        indent,
+        deliveries: createdDeliveries
+      }
+    });
+  } catch (err) {
+    console.error('❌ Approve indent error:', err);
+    res.status(400).json({ 
+      success: false,
+      message: "Failed to approve indent", 
+      error: err.message 
+    });
+  }
+});
+
 // ✅ UPDATE INDENT (General update with status sync)
 router.put("/:id", auth, async (req, res) => {
   try {

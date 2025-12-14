@@ -238,8 +238,10 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     await purchaseOrder.save();
     console.log('✅ Purchase order saved to database:', purchaseOrder._id);
     
-    await syncToUpcomingDelivery(purchaseOrder);
-    console.log('✅ Synced to upcoming delivery');
+    // ⚠️ DO NOT auto-sync to Upcoming Deliveries on creation
+    // Sync only happens after admin approval with vendor selection
+    // await syncToUpcomingDelivery(purchaseOrder);
+    console.log('✅ PO created - waiting for admin approval before syncing to Upcoming Deliveries');
 
     res.status(201).json({
       success: true,
@@ -370,6 +372,106 @@ router.get('/:id', async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch purchase order',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// APPROVE purchase order with vendor grouping
+router.put('/:id/approve', async (req, res) => {
+  try {
+    const purchaseOrder = await PurchaseOrder.findById(req.params.id)
+      .populate('materials.vendor', 'companyName contact mobile email');
+    
+    if (!purchaseOrder) {
+      return res.status(404).json({
+        success: false,
+        message: 'Purchase order not found'
+      });
+    }
+    
+    // Update status to approved
+    purchaseOrder.status = 'approved';
+    await purchaseOrder.save();
+    
+    console.log('✅ Purchase order approved:', purchaseOrder.purchaseOrderId);
+    console.log('📦 Materials count:', purchaseOrder.materials?.length || 0);
+    
+    // Group materials by vendor
+    const vendorGroups = {};
+    
+    purchaseOrder.materials.forEach((material, index) => {
+      const vendorId = material.vendor?._id?.toString() || 'no-vendor';
+      
+      if (!vendorGroups[vendorId]) {
+        vendorGroups[vendorId] = {
+          vendorInfo: material.vendor || null,
+          materials: []
+        };
+      }
+      
+      vendorGroups[vendorId].materials.push({
+        ...material.toObject(),
+        originalIndex: index
+      });
+    });
+    
+    console.log('🏭 Vendor groups:', Object.keys(vendorGroups).length);
+    
+    // Create separate UpcomingDelivery for each vendor
+    const createdDeliveries = [];
+    
+    for (const [vendorId, group] of Object.entries(vendorGroups)) {
+      if (vendorId === 'no-vendor') {
+        console.log('⚠️ Skipping materials without vendor');
+        continue;
+      }
+      
+      const items = group.materials.map(mat => ({
+        itemId: mat._id.toString(),
+        name: mat.itemName,
+        category: mat.category,
+        quantity: mat.quantity,
+        uom: mat.uom,
+        received_quantity: mat.received_quantity || 0,
+        is_received: mat.is_received || false,
+        remarks: mat.remarks
+      }));
+      
+      // Create delivery entry for this vendor
+      const delivery = new UpcomingDelivery({
+        st_id: purchaseOrder._id.toString(),
+        source_type: 'PurchaseOrder',
+        source_id: purchaseOrder.purchaseOrderId,
+        vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
+        vendor_id: vendorId,
+        delivery_site: purchaseOrder.deliverySite,
+        requested_by: purchaseOrder.requestedBy,
+        items: items,
+        status: 'Pending',
+        created_date: new Date(),
+        expected_delivery: purchaseOrder.requestDate
+      });
+      
+      await delivery.save();
+      createdDeliveries.push(delivery);
+      
+      console.log(`✅ Created delivery for vendor: ${group.vendorInfo?.companyName} (${items.length} materials)`);
+    }
+    
+    res.json({
+      success: true,
+      message: `Purchase order approved and ${createdDeliveries.length} delivery entries created`,
+      data: {
+        purchaseOrder,
+        deliveries: createdDeliveries
+      }
+    });
+  } catch (err) {
+    console.error('❌ Approve purchase order error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve purchase order',
       error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
