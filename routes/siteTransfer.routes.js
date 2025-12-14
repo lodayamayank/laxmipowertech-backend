@@ -334,6 +334,43 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
   }
 });
 
+// APPROVE site transfer (matches Intent PO workflow)
+router.put('/:id/approve', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+    
+    console.log('✅ Approving Site Transfer:', transfer.siteTransferId);
+    
+    // Update status to approved
+    transfer.status = 'approved';
+    await transfer.save();
+    
+    // Sync to Upcoming Delivery
+    await syncToUpcomingDelivery(transfer);
+    console.log(`✅ Site Transfer ${transfer.siteTransferId} approved and synced to Upcoming Deliveries`);
+    
+    res.json({
+      success: true,
+      message: 'Site transfer approved and synced to Upcoming Deliveries',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Approve site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // DELETE site transfer
 router.delete('/:id', async (req, res) => {
   try {
