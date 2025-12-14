@@ -56,6 +56,29 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
     
     console.log(`🔄 syncToUpcomingDelivery: ST ${siteTransfer.siteTransferId} - status='${siteTransfer.status}' → deliveryStatus='${deliveryStatus}'`);
     
+    // ✅ CRITICAL: Auto-fill material quantities when status is Transferred
+    if (statusLower === 'transferred') {
+      console.log(`🔄 Status is Transferred - auto-filling all material received quantities`);
+      
+      // Auto-fill received quantities for all materials
+      let updated = false;
+      siteTransfer.materials.forEach(mat => {
+        const approvedQty = mat.quantity || 0;
+        if (!mat.received_quantity || mat.received_quantity === 0) {
+          mat.received_quantity = approvedQty;  // Auto-fill
+          mat.is_received = true;
+          updated = true;
+          console.log(`✅ Auto-filled ${mat.itemName}: received_quantity = ${approvedQty}`);
+        }
+      });
+      
+      // Save the updated Site Transfer with auto-filled quantities
+      if (updated) {
+        await siteTransfer.save();
+        console.log(`✅ Saved Site Transfer with auto-filled quantities`);
+      }
+    }
+    
     // ✅ Check if all materials are fully received (override to Transferred)
     const allFullyReceived = siteTransfer.materials.every(mat => {
       const received = mat.received_quantity || 0;

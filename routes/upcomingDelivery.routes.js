@@ -435,12 +435,8 @@ router.put('/:id/status', protect, async (req, res) => {
       });
     }
 
-    // Find and update delivery
-    const delivery = await UpcomingDelivery.findByIdAndUpdate(
-      req.params.id,
-      { status: normalizedStatus, updatedAt: Date.now() },
-      { new: true, runValidators: true }
-    );
+    // Find delivery first
+    const delivery = await UpcomingDelivery.findById(req.params.id);
 
     if (!delivery) {
       console.error(`❌ Delivery not found: ${req.params.id}`);
@@ -449,6 +445,41 @@ router.put('/:id/status', protect, async (req, res) => {
         message: 'Upcoming delivery not found'
       });
     }
+
+    // ✅ CRITICAL FIX: Auto-fill material quantities when status changed to Transferred
+    if (normalizedStatus === 'Transferred') {
+      console.log(`🔄 Status changed to Transferred - auto-filling all material quantities`);
+      
+      // Validate that delivery has items
+      if (!delivery.items || delivery.items.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Cannot mark as Transferred: No materials found in delivery'
+        });
+      }
+
+      // Auto-fill received quantities for all materials
+      delivery.items = delivery.items.map(item => {
+        const approvedQty = item.st_quantity || 0;
+        
+        if (approvedQty === 0) {
+          console.warn(`⚠️ Warning: Item ${item.category} has 0 approved quantity`);
+        }
+
+        return {
+          ...item,
+          received_quantity: approvedQty,  // Auto-fill: received = approved
+          is_received: true                 // Mark as fully received
+        };
+      });
+
+      console.log(`✅ Auto-filled ${delivery.items.length} materials with full quantities`);
+    }
+
+    // Update status and items
+    delivery.status = normalizedStatus;
+    delivery.updatedAt = Date.now();
+    await delivery.save();
 
     console.log(`✅ Delivery status updated: ${delivery.st_id} → ${normalizedStatus}`);
 
