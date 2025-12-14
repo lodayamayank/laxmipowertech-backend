@@ -144,14 +144,13 @@ router.put("/:id/status", auth, async (req, res) => {
 // ✅ UPDATE INDENT (General update with status sync)
 router.put("/:id", auth, async (req, res) => {
   try {
-    const { status, remarks, requestedBy, deliverySite, materials } = req.body;
+    // ✅ CRITICAL: Indents use 'items' not 'materials', and 'adminRemarks' not 'remarks'
+    const { status, adminRemarks, items } = req.body;
     
     const updateData = {
       status,
-      remarks,
-      requestedBy,
-      deliverySite,
-      materials
+      adminRemarks,
+      items
     };
     
     // Remove undefined fields
@@ -163,7 +162,12 @@ router.put("/:id", auth, async (req, res) => {
       req.params.id,
       updateData,
       { new: true, runValidators: true }
-    );
+    )
+      .populate('project', 'name')
+      .populate('branch', 'name')
+      .populate('requestedBy', 'name role')
+      .populate('approvedBy', 'name role')
+      .populate('items.vendor', 'companyName contact mobile email'); // Populate vendor for each item
     
     if (!indent) {
       return res.status(404).json({ 
