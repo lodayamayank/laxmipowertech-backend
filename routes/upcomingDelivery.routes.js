@@ -21,11 +21,11 @@ router.post('/migrate-sync', protect, async (req, res) => {
     let skipped = 0;
     let errors = [];
 
-    console.log('🔄 Starting migration: Syncing existing Intent POs to Upcoming Deliveries...');
+    console.log('🔄 Starting migration: Syncing APPROVED Intent POs to Upcoming Deliveries...');
 
-    // ✅ Sync all Purchase Orders
-    const purchaseOrders = await PurchaseOrder.find({});
-    console.log(`📦 Found ${purchaseOrders.length} Purchase Orders`);
+    // ✅ Sync all APPROVED Purchase Orders only
+    const purchaseOrders = await PurchaseOrder.find({ status: 'approved' });
+    console.log(`📦 Found ${purchaseOrders.length} approved Purchase Orders`);
 
     for (const po of purchaseOrders) {
       try {
@@ -67,9 +67,9 @@ router.post('/migrate-sync', protect, async (req, res) => {
       }
     }
 
-    // ✅ Sync all Indents
-    const indents = await Indent.find({}).populate('branch', 'name').populate('project', 'name').populate('requestedBy', 'name');
-    console.log(`📸 Found ${indents.length} Indents`);
+    // ✅ Sync all APPROVED Indents only
+    const indents = await Indent.find({ status: 'approved' }).populate('branch', 'name').populate('project', 'name').populate('requestedBy', 'name');
+    console.log(`📸 Found ${indents.length} approved Indents`);
 
     for (const indent of indents) {
       try {
@@ -119,6 +119,72 @@ router.post('/migrate-sync', protect, async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Migration failed',
+      error: err.message
+    });
+  }
+});
+
+// ✅ CLEANUP ENDPOINT: Remove deliveries for pending intents (TEMPORARY - for one-time cleanup)
+router.post('/cleanup-pending', protect, async (req, res) => {
+  try {
+    let deleted = 0;
+    let errors = [];
+    
+    console.log('🧹 Starting cleanup: Removing deliveries for pending intents...');
+    
+    // Find all deliveries with source_type = 'Indent'
+    const deliveries = await UpcomingDelivery.find({ source_type: 'Indent' });
+    console.log(`📦 Found ${deliveries.length} indent-based deliveries`);
+    
+    for (const delivery of deliveries) {
+      try {
+        // Check if associated indent is pending
+        const indent = await Indent.findById(delivery.st_id);
+        if (indent && indent.status === 'pending') {
+          await UpcomingDelivery.findByIdAndDelete(delivery._id);
+          deleted++;
+          console.log(`🗑️ Deleted delivery for pending indent: ${indent.indentId}`);
+        }
+      } catch (err) {
+        errors.push(`Delivery ${delivery._id}: ${err.message}`);
+        console.error(`❌ Error checking delivery ${delivery._id}:`, err.message);
+      }
+    }
+    
+    // Also check Purchase Orders
+    const poDeliveries = await UpcomingDelivery.find({ source_type: 'PurchaseOrder' });
+    console.log(`📦 Found ${poDeliveries.length} PO-based deliveries`);
+    
+    for (const delivery of poDeliveries) {
+      try {
+        const po = await PurchaseOrder.findById(delivery.st_id);
+        if (po && po.status === 'pending') {
+          await UpcomingDelivery.findByIdAndDelete(delivery._id);
+          deleted++;
+          console.log(`🗑️ Deleted delivery for pending PO: ${po.purchaseOrderId}`);
+        }
+      } catch (err) {
+        errors.push(`Delivery ${delivery._id}: ${err.message}`);
+        console.error(`❌ Error checking delivery ${delivery._id}:`, err.message);
+      }
+    }
+    
+    console.log(`✅ Cleanup complete: ${deleted} deliveries deleted, ${errors.length} errors`);
+    
+    res.json({
+      success: true,
+      message: `Cleaned up ${deleted} deliveries for pending intents/POs`,
+      summary: {
+        deleted,
+        errors: errors.length,
+        errorDetails: errors
+      }
+    });
+  } catch (err) {
+    console.error('❌ Cleanup error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Cleanup failed',
       error: err.message
     });
   }
