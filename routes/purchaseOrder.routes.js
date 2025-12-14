@@ -37,7 +37,7 @@ const populateRequestedBy = async (order) => {
   return order;
 };
 
-// Generate unique purchaseOrderId
+// Generate unique purchaseOrderId with sequential numbering (PO-YYYYMMDD-01)
 const generatePurchaseOrderId = async () => {
   const date = new Date();
   const year = date.getFullYear();
@@ -45,13 +45,22 @@ const generatePurchaseOrderId = async () => {
   const day = String(date.getDate()).padStart(2, '0');
   const ymd = `${year}${month}${day}`;
   
-  const suffix = Math.random().toString(36).slice(2, 7).toUpperCase();
-  const purchaseOrderId = `PO${ymd}-${suffix}`;
+  // Find all POs with today's date to get the next sequential number
+  const prefix = `PO-${ymd}`;
+  const existingPOs = await PurchaseOrder.find({
+    purchaseOrderId: { $regex: `^${prefix}` }
+  }).sort({ purchaseOrderId: -1 }).limit(1);
   
-  const existing = await PurchaseOrder.findOne({ purchaseOrderId });
-  if (existing) {
-    return generatePurchaseOrderId();
+  let sequence = 1;
+  if (existingPOs.length > 0) {
+    // Extract sequence number from last PO (e.g., "PO-20241215-03" -> 3)
+    const lastId = existingPOs[0].purchaseOrderId;
+    const lastSequence = parseInt(lastId.split('-').pop());
+    sequence = lastSequence + 1;
   }
+  
+  const sequenceStr = String(sequence).padStart(2, '0');
+  const purchaseOrderId = `${prefix}-${sequenceStr}`;
   
   return purchaseOrderId;
 };
