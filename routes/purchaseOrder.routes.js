@@ -37,7 +37,7 @@ const populateRequestedBy = async (order) => {
   return order;
 };
 
-// Generate unique purchaseOrderId with sequential numbering (PO-YYYYMMDD-01)
+// ✅ Generate unique purchaseOrderId with random 5-char suffix (POYYYYMMDD-<5-char random>)
 const generatePurchaseOrderId = async () => {
   const date = new Date();
   const year = date.getFullYear();
@@ -45,22 +45,30 @@ const generatePurchaseOrderId = async () => {
   const day = String(date.getDate()).padStart(2, '0');
   const ymd = `${year}${month}${day}`;
   
-  // Find all POs with today's date to get the next sequential number
-  const prefix = `PO-${ymd}`;
-  const existingPOs = await PurchaseOrder.find({
-    purchaseOrderId: { $regex: `^${prefix}` }
-  }).sort({ purchaseOrderId: -1 }).limit(1);
+  // Generate random 5-character alphanumeric suffix
+  const generateRandomSuffix = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let suffix = '';
+    for (let i = 0; i < 5; i++) {
+      suffix += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return suffix;
+  };
   
-  let sequence = 1;
-  if (existingPOs.length > 0) {
-    // Extract sequence number from last PO (e.g., "PO-20241215-03" -> 3)
-    const lastId = existingPOs[0].purchaseOrderId;
-    const lastSequence = parseInt(lastId.split('-').pop());
-    sequence = lastSequence + 1;
+  // Keep generating until we find a unique ID
+  let purchaseOrderId;
+  let isUnique = false;
+  
+  while (!isUnique) {
+    const randomSuffix = generateRandomSuffix();
+    purchaseOrderId = `PO${ymd}-${randomSuffix}`;  // Format: PO20251214-NWA0M
+    
+    // Check if this ID already exists
+    const existing = await PurchaseOrder.findOne({ purchaseOrderId });
+    if (!existing) {
+      isUnique = true;
+    }
   }
-  
-  const sequenceStr = String(sequence).padStart(2, '0');
-  const purchaseOrderId = `${prefix}-${sequenceStr}`;
   
   return purchaseOrderId;
 };
