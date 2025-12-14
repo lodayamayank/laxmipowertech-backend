@@ -47,11 +47,15 @@ const syncToUpcomingDelivery = async (siteTransfer) => {
     // ✅ CRITICAL FIX: Map SiteTransfer status to UpcomingDelivery status
     // Approved → Approved (NOT Partial)
     // Partial status is determined by received_quantity vs st_quantity, not by approval
+    // 🔧 CASE-INSENSITIVE: Handle both 'approved'/'Approved' and 'transferred'/'Transferred'
+    const statusLower = (siteTransfer.status || '').toLowerCase();
     let deliveryStatus = 'Pending';
-    if (siteTransfer.status === 'transferred') deliveryStatus = 'Transferred';
-    else if (siteTransfer.status === 'approved') deliveryStatus = 'Approved';  // ✅ FIX: Approved, not Partial
-    else if (siteTransfer.status === 'pending') deliveryStatus = 'Pending';
-    else if (siteTransfer.status === 'cancelled') deliveryStatus = 'Cancelled';
+    if (statusLower === 'transferred') deliveryStatus = 'Transferred';
+    else if (statusLower === 'approved') deliveryStatus = 'Approved';  // ✅ FIX: Approved, not Partial
+    else if (statusLower === 'pending') deliveryStatus = 'Pending';
+    else if (statusLower === 'cancelled') deliveryStatus = 'Cancelled';
+    
+    console.log(`🔄 syncToUpcomingDelivery: ST ${siteTransfer.siteTransferId} - status='${siteTransfer.status}' → deliveryStatus='${deliveryStatus}'`);
     
     // ✅ Check if any materials are partially received (override to Partial if applicable)
     const hasPartiallyReceived = siteTransfer.materials.some(mat => {
@@ -293,7 +297,11 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
 
     // ✅ CRITICAL: Only sync to Upcoming Delivery when status is 'approved' or 'transferred'
     // This matches the Intent lifecycle exactly: pending → NOT synced → approved → SYNCED to Upcoming Deliveries
-    const shouldSync = transfer.status === 'approved' || transfer.status === 'transferred';
+    // 🔧 CASE-INSENSITIVE: Handle both 'approved'/'Approved' and 'transferred'/'Transferred'
+    const statusLower = (transfer.status || '').toLowerCase();
+    const shouldSync = statusLower === 'approved' || statusLower === 'transferred';
+    
+    console.log(`🔍 SiteTransfer ${transfer.siteTransferId}: status='${transfer.status}' (lower='${statusLower}'), shouldSync=${shouldSync}`);
     
     if (shouldSync) {
       await syncToUpcomingDelivery(transfer);
@@ -302,7 +310,7 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       console.log(`⏸️ Skipping sync for SiteTransfer ${transfer.siteTransferId} (status: ${transfer.status} - not approved yet)`);
       
       // ✅ Cleanup: If status changed FROM approved/transferred TO pending/cancelled, remove from UpcomingDelivery
-      if (transfer.status === 'pending' || transfer.status === 'cancelled') {
+      if (statusLower === 'pending' || statusLower === 'cancelled') {
         const existing = await UpcomingDelivery.findOne({ st_id: transfer.siteTransferId });
         if (existing) {
           await UpcomingDelivery.findByIdAndDelete(existing._id);
