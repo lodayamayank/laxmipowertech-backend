@@ -9,19 +9,30 @@ import UpcomingDelivery from '../models/UpcomingDelivery.js';
 
 /**
  * Calculate status based on items
- * @param {Array} items - Array of items with st_quantity and received_quantity
+ * @param {Array} items - Array of items with quantity/st_quantity and received_quantity
  * @returns {String} - Status: 'Pending', 'Partial', or 'Transferred'
+ * 
+ * Logic:
+ * - requested == received → Transferred
+ * - requested > received (and received > 0) → Partial
+ * - received == 0 → Pending
  */
 export const calculateDeliveryStatus = (items) => {
   if (!items || items.length === 0) return 'Pending';
   
-  const allReceived = items.every(item => 
-    item.is_received && item.received_quantity >= item.st_quantity
-  );
+  // Check if all materials are fully received
+  const allReceived = items.every(item => {
+    const requestedQty = item.quantity || item.st_quantity || 0;
+    const receivedQty = item.received_quantity || 0;
+    // Both conditions: checkbox checked AND quantity matches
+    return item.is_received && receivedQty >= requestedQty;
+  });
   
-  const noneReceived = items.every(item => 
-    item.received_quantity === 0
-  );
+  // Check if no materials received at all
+  const noneReceived = items.every(item => {
+    const receivedQty = item.received_quantity || 0;
+    return receivedQty === 0;
+  });
   
   if (allReceived) return 'Transferred';
   if (noneReceived) return 'Pending';

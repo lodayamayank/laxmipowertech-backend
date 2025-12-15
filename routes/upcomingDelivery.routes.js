@@ -325,9 +325,6 @@ router.put('/:id/items', async (req, res) => {
       });
     }
 
-    // Store original status
-    const originalStatus = delivery.status;
-    
     // Update items
     items.forEach(updatedItem => {
       const itemIndex = delivery.items.findIndex(
@@ -340,24 +337,14 @@ router.put('/:id/items', async (req, res) => {
       }
     });
 
-    // ✅ Only auto-calculate status if it becomes fully transferred
-    // Otherwise keep the manually set status
+    // ✅ Auto-calculate status based on items
+    // Logic: requested == received → Transferred
+    //        requested > received (received > 0) → Partial
+    //        received == 0 → Pending
     const calculatedStatus = calculateDeliveryStatus(delivery.items);
+    delivery.status = calculatedStatus;
     
-    // Only update status if:
-    // 1. All items are fully received (Transferred)
-    // 2. Or current status is Pending and some items are received (Partial)
-    if (calculatedStatus === 'Transferred') {
-      delivery.status = 'Transferred';
-      console.log(`📊 Status auto-updated to Transferred (all items received)`);
-    } else if (originalStatus === 'Pending' && calculatedStatus === 'Partial') {
-      delivery.status = 'Partial';
-      console.log(`📊 Status auto-updated to Partial (some items received)`);
-    } else {
-      // Keep original status (manually set by admin)
-      delivery.status = originalStatus;
-      console.log(`📊 Status kept as ${originalStatus} (manually set)`);
-    }
+    console.log(`📊 Status auto-calculated: ${calculatedStatus} based on item quantities`);
 
     await delivery.save();
 
