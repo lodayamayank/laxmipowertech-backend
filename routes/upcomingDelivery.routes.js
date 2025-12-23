@@ -598,10 +598,10 @@ const extractBasePOId = (poId) => {
   return poId.replace(/-\d+$/, '');
 };
 
-// UPDATE GRN billing details
+// UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
-    const { price, billDate, discount, discountType } = req.body;
+    const { billDate, materialBilling } = req.body;
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
@@ -616,45 +616,72 @@ router.put('/:id/billing', protect, async (req, res) => {
     // Auto-generate invoice number from base PO ID
     const basePOId = extractBasePOId(delivery.transfer_number || delivery.st_id);
     
-    // Parse values
-    const priceValue = parseFloat(price) || 0;
-    const discountValue = parseFloat(discount) || 0;
-    const type = discountType || 'flat';
+    // Process material-wise billing
+    const processedMaterialBilling = [];
+    let totalPrice = 0;
+    let totalDiscountAmount = 0;
     
-    // Calculate amount based on discount type
-    let calculatedAmount;
-    if (type === 'percentage') {
-      // Percentage discount: amount = price - (price * discount / 100)
-      calculatedAmount = priceValue - (priceValue * discountValue / 100);
-    } else {
-      // Flat discount: amount = price - discount
-      calculatedAmount = priceValue - discountValue;
+    if (materialBilling && Array.isArray(materialBilling)) {
+      materialBilling.forEach(material => {
+        const price = parseFloat(material.price) || 0;
+        const discount = parseFloat(material.discount) || 0;
+        const discountType = material.discountType || 'flat';
+        
+        // Calculate total amount per material
+        let totalAmount;
+        let discountAmount;
+        
+        if (discountType === 'percentage') {
+          discountAmount = price * discount / 100;
+          totalAmount = price - discountAmount;
+        } else {
+          discountAmount = discount;
+          totalAmount = price - discount;
+        }
+        
+        // Ensure non-negative
+        totalAmount = Math.max(0, totalAmount);
+        
+        processedMaterialBilling.push({
+          materialId: material.materialId,
+          materialName: material.materialName,
+          price: price,
+          discount: discount,
+          discountType: discountType,
+          totalAmount: totalAmount
+        });
+        
+        // Accumulate totals
+        totalPrice += price;
+        totalDiscountAmount += discountAmount;
+      });
     }
     
-    // Ensure amount is not negative
-    calculatedAmount = Math.max(0, calculatedAmount);
+    const finalAmount = totalPrice - totalDiscountAmount;
     
     // Update billing information
     delivery.billing = {
-      invoiceNumber: basePOId,  // Auto-generated from base PO ID
-      price: priceValue,
+      invoiceNumber: basePOId,
       billDate: billDate ? new Date(billDate) : null,
-      discount: discountValue,
-      discountType: type,
-      amount: calculatedAmount
+      materialBilling: processedMaterialBilling,
+      totalPrice: totalPrice,
+      totalDiscount: totalDiscountAmount,
+      finalAmount: Math.max(0, finalAmount)
     };
     
     delivery.updatedAt = Date.now();
     await delivery.save();
     
-    console.log(`✅ Billing updated for GRN ${delivery.st_id}:`, delivery.billing);
-    console.log(`   Invoice Number: ${basePOId} (from ${delivery.transfer_number || delivery.st_id})`);
-    console.log(`   Discount: ${discountValue} ${type === 'percentage' ? '%' : '₹'}`);
-    console.log(`   Amount: ₹${calculatedAmount.toFixed(2)}`);
+    console.log(`✅ Material-wise billing updated for GRN ${delivery.st_id}`);
+    console.log(`   Invoice Number: ${basePOId}`);
+    console.log(`   Materials: ${processedMaterialBilling.length}`);
+    console.log(`   Total Price: ₹${totalPrice.toFixed(2)}`);
+    console.log(`   Total Discount: ₹${totalDiscountAmount.toFixed(2)}`);
+    console.log(`   Final Amount: ₹${finalAmount.toFixed(2)}`);
     
     res.json({
       success: true,
-      message: 'Billing details updated successfully',
+      message: 'Material-wise billing updated successfully',
       data: delivery
     });
   } catch (err) {

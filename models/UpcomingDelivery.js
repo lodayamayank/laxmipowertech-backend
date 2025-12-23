@@ -84,14 +84,24 @@ const UpcomingDeliverySchema = new mongoose.Schema({
       publicId: { type: String, required: true }
     }
   ],
-  // Billing Information (for GRN)
+  // Billing Information (for GRN) - Material-wise
   billing: {
     invoiceNumber: { type: String },  // Auto-generated from base PO ID
-    price: { type: Number, default: 0 },
     billDate: { type: Date },
-    discount: { type: Number, default: 0 },
-    discountType: { type: String, enum: ['flat', 'percentage'], default: 'flat' },  // ₹ or %
-    amount: { type: Number, default: 0 }  // Auto-calculated based on discount type
+    materialBilling: [
+      {
+        materialId: { type: String },  // Reference to item in items array
+        materialName: { type: String },
+        price: { type: Number, default: 0 },
+        discount: { type: Number, default: 0 },
+        discountType: { type: String, enum: ['flat', 'percentage'], default: 'flat' },
+        totalAmount: { type: Number, default: 0 }  // Auto-calculated per material
+      }
+    ],
+    // Summary totals (auto-calculated from materialBilling)
+    totalPrice: { type: Number, default: 0 },
+    totalDiscount: { type: Number, default: 0 },
+    finalAmount: { type: Number, default: 0 }
   },
   createdAt: { 
     type: Date, 
