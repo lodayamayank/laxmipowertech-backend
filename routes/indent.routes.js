@@ -2,6 +2,7 @@ import express from "express";
 import auth from "../middleware/authMiddleware.js";
 import Indent from "../models/Indent.js";
 import UpcomingDelivery from "../models/UpcomingDelivery.js";
+import { filterByUserBranches, applySingleSiteBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
   upload, 
   uploadToCloudinary,
@@ -28,11 +29,14 @@ router.post("/", auth, async (req, res) => {
   }
 });
 
-// ✅ Get all indents (Admin side, with filters and pagination)
-router.get("/", auth, async (req, res) => {
+// ✅ Get all indents with branch-based filtering
+router.get("/", auth, filterByUserBranches, async (req, res) => {
   try {
     const { status, project, requestedBy, page = 1, limit = 10, search = '' } = req.query;
     const filter = {};
+    
+    // ✅ Apply branch-based filtering (deliverySite field)
+    applySingleSiteBranchFilter(req, filter, 'deliverySite');
     
     if (status) filter.status = status;
     if (project) filter.project = project;

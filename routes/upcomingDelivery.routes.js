@@ -5,6 +5,7 @@ import PurchaseOrder from '../models/PurchaseOrder.js';
 import Indent from '../models/Indent.js';
 import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
 import protect from '../middleware/authMiddleware.js';
+import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
   upload, 
   uploadMultipleToCloudinary,
@@ -190,28 +191,40 @@ router.post('/cleanup-pending', protect, async (req, res) => {
   }
 });
 
-// GET all upcoming deliveries (NO role-based filtering - matches demonstrated project)
-router.get('/', protect, async (req, res) => {
+// GET all upcoming deliveries with branch-based filtering
+router.get('/', protect, filterByUserBranches, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    // Build base query - NO ROLE-BASED FILTERING
-    // ✅ CRITICAL FIX: Show ALL deliveries to ALL users (admin + client)
-    // This matches the demonstrated project behavior
+    // Build base query
     let query = {};
+
+    // ✅ Apply branch-based filtering (admin sees all, clients see only their branches)
+    query = applyBranchFilter(req, query, 'from', 'to');
 
     // Add search filters
     if (search) {
-      query.$or = [
+      const searchConditions = [
         { st_id: { $regex: search, $options: 'i' } },
         { transfer_number: { $regex: search, $options: 'i' } },
         { from: { $regex: search, $options: 'i' } },
         { to: { $regex: search, $options: 'i' } },
         { createdBy: { $regex: search, $options: 'i' } }
       ];
+      
+      // Combine branch filter with search
+      if (query.$or) {
+        query.$and = [
+          { $or: query.$or },
+          { $or: searchConditions }
+        ];
+        delete query.$or;
+      } else {
+        query.$or = searchConditions;
+      }
     }
 
     const deliveries = await UpcomingDelivery.find(query)

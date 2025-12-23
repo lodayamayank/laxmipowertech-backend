@@ -2,6 +2,8 @@ import express from 'express';
 import SiteTransfer from '../models/SiteTransfer.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
+import protect from '../middleware/authMiddleware.js';
+import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
   upload, 
   uploadMultipleToCloudinary,
@@ -198,19 +200,23 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
   }
 });
 
-// GET all site transfers
-router.get('/', async (req, res) => {
+// GET all site transfers with branch-based filtering
+router.get('/', protect, filterByUserBranches, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const transfers = await SiteTransfer.find()
+    // Build query with branch filtering
+    let query = {};
+    query = applyBranchFilter(req, query, 'fromSite', 'toSite');
+
+    const transfers = await SiteTransfer.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const total = await SiteTransfer.countDocuments();
+    const total = await SiteTransfer.countDocuments(query);
 
     res.json({
       success: true,

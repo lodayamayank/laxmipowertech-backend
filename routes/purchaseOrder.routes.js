@@ -3,6 +3,8 @@ import PurchaseOrder from '../models/PurchaseOrder.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
 import User from '../models/User.js';
 import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
+import protect from '../middleware/authMiddleware.js';
+import { filterByUserBranches, applySingleSiteBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
   upload, 
   uploadMultipleToCloudinary,
@@ -286,21 +288,37 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
   }
 });
 
-// GET all purchase orders
-router.get('/', async (req, res) => {
+// GET all purchase orders with branch-based filtering
+router.get('/', protect, filterByUserBranches, async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    const query = search ? {
-      $or: [
+    // Build query with branch filtering
+    let query = {};
+    query = applySingleSiteBranchFilter(req, query, 'deliverySite');
+
+    // Add search filters
+    if (search) {
+      const searchConditions = [
         { purchaseOrderId: { $regex: search, $options: 'i' } },
         { deliverySite: { $regex: search, $options: 'i' } },
         { requestedBy: { $regex: search, $options: 'i' } }
-      ]
-    } : {};
+      ];
+      
+      // Combine branch filter with search
+      if (query.deliverySite) {
+        query.$and = [
+          { deliverySite: query.deliverySite },
+          { $or: searchConditions }
+        ];
+        delete query.deliverySite;
+      } else {
+        query.$or = searchConditions;
+      }
+    }
 
     const orders = await PurchaseOrder.find(query)
       .populate('materials.vendor', 'companyName contact mobile email') // Populate vendor for each material
