@@ -590,6 +590,53 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// UPDATE GRN billing details
+router.put('/:id/billing', protect, async (req, res) => {
+  try {
+    const { invoiceNumber, price, billDate, discount } = req.body;
+    
+    // Find delivery
+    const delivery = await UpcomingDelivery.findById(req.params.id);
+    
+    if (!delivery) {
+      return res.status(404).json({
+        success: false,
+        message: 'Delivery not found'
+      });
+    }
+    
+    // Calculate amount (price - discount)
+    const calculatedAmount = (parseFloat(price) || 0) - (parseFloat(discount) || 0);
+    
+    // Update billing information
+    delivery.billing = {
+      invoiceNumber: invoiceNumber || '',
+      price: parseFloat(price) || 0,
+      billDate: billDate ? new Date(billDate) : null,
+      discount: parseFloat(discount) || 0,
+      amount: calculatedAmount
+    };
+    
+    delivery.updatedAt = Date.now();
+    await delivery.save();
+    
+    console.log(`✅ Billing updated for GRN ${delivery.st_id}:`, delivery.billing);
+    
+    res.json({
+      success: true,
+      message: 'Billing details updated successfully',
+      data: delivery
+    });
+  } catch (err) {
+    console.error('Update billing error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update billing details',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // ✅ TEST ENDPOINT - Check sync status for a specific PO/Transfer Number
 router.get('/test-sync/:transferNumber', protect, async (req, res) => {
   try {
