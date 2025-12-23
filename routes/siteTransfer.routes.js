@@ -14,7 +14,7 @@ import {
 
 const router = express.Router();
 
-// Generate unique siteTransferId with sequential numbering (ST-YYYYMMDD-01)
+// ✅ Generate unique siteTransferId matching PO pattern (ST20251223-XXXXX)
 const generateSiteTransferId = async () => {
   const date = new Date();
   const year = date.getFullYear();
@@ -22,22 +22,22 @@ const generateSiteTransferId = async () => {
   const day = String(date.getDate()).padStart(2, '0');
   const ymd = `${year}${month}${day}`;
   
-  // Find all STs with today's date to get the next sequential number
-  const prefix = `ST-${ymd}`;
-  const existingSTs = await SiteTransfer.find({
-    siteTransferId: { $regex: `^${prefix}` }
-  }).sort({ siteTransferId: -1 }).limit(1);
-  
-  let sequence = 1;
-  if (existingSTs.length > 0) {
-    // Extract sequence number from last ST (e.g., "ST-20241215-03" -> 3)
-    const lastId = existingSTs[0].siteTransferId;
-    const lastSequence = parseInt(lastId.split('-').pop());
-    sequence = lastSequence + 1;
+  // Generate random 5-character alphanumeric suffix (matching PO pattern)
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let randomSuffix = '';
+  for (let i = 0; i < 5; i++) {
+    randomSuffix += characters.charAt(Math.floor(Math.random() * characters.length));
   }
   
-  const sequenceStr = String(sequence).padStart(2, '0');
-  const siteTransferId = `${prefix}-${sequenceStr}`;
+  // Format: ST20251223-XXXXX (no dash after ST, matches PO20251223-RNN73 pattern)
+  const siteTransferId = `ST${ymd}-${randomSuffix}`;
+  
+  // Ensure uniqueness (very unlikely collision, but check anyway)
+  const existing = await SiteTransfer.findOne({ siteTransferId });
+  if (existing) {
+    // Recursive call if collision (extremely rare)
+    return generateSiteTransferId();
+  }
   
   return siteTransferId;
 };
