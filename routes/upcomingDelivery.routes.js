@@ -590,10 +590,18 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// Helper function to extract base PO ID (remove -01, -02 suffix)
+const extractBasePOId = (poId) => {
+  if (!poId) return '';
+  // Remove trailing -01, -02, etc. from PO ID
+  // Example: PO20251223-LNBNE-01 -> PO20251223-LNBNE
+  return poId.replace(/-\d+$/, '');
+};
+
 // UPDATE GRN billing details
 router.put('/:id/billing', protect, async (req, res) => {
   try {
-    const { invoiceNumber, price, billDate, discount } = req.body;
+    const { price, billDate, discount, discountType } = req.body;
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
@@ -605,15 +613,34 @@ router.put('/:id/billing', protect, async (req, res) => {
       });
     }
     
-    // Calculate amount (price - discount)
-    const calculatedAmount = (parseFloat(price) || 0) - (parseFloat(discount) || 0);
+    // Auto-generate invoice number from base PO ID
+    const basePOId = extractBasePOId(delivery.transfer_number || delivery.st_id);
+    
+    // Parse values
+    const priceValue = parseFloat(price) || 0;
+    const discountValue = parseFloat(discount) || 0;
+    const type = discountType || 'flat';
+    
+    // Calculate amount based on discount type
+    let calculatedAmount;
+    if (type === 'percentage') {
+      // Percentage discount: amount = price - (price * discount / 100)
+      calculatedAmount = priceValue - (priceValue * discountValue / 100);
+    } else {
+      // Flat discount: amount = price - discount
+      calculatedAmount = priceValue - discountValue;
+    }
+    
+    // Ensure amount is not negative
+    calculatedAmount = Math.max(0, calculatedAmount);
     
     // Update billing information
     delivery.billing = {
-      invoiceNumber: invoiceNumber || '',
-      price: parseFloat(price) || 0,
+      invoiceNumber: basePOId,  // Auto-generated from base PO ID
+      price: priceValue,
       billDate: billDate ? new Date(billDate) : null,
-      discount: parseFloat(discount) || 0,
+      discount: discountValue,
+      discountType: type,
       amount: calculatedAmount
     };
     
@@ -621,6 +648,9 @@ router.put('/:id/billing', protect, async (req, res) => {
     await delivery.save();
     
     console.log(`✅ Billing updated for GRN ${delivery.st_id}:`, delivery.billing);
+    console.log(`   Invoice Number: ${basePOId} (from ${delivery.transfer_number || delivery.st_id})`);
+    console.log(`   Discount: ${discountValue} ${type === 'percentage' ? '%' : '₹'}`);
+    console.log(`   Amount: ₹${calculatedAmount.toFixed(2)}`);
     
     res.json({
       success: true,

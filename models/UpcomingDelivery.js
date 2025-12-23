@@ -86,11 +86,12 @@ const UpcomingDeliverySchema = new mongoose.Schema({
   ],
   // Billing Information (for GRN)
   billing: {
-    invoiceNumber: { type: String },
+    invoiceNumber: { type: String },  // Auto-generated from base PO ID
     price: { type: Number, default: 0 },
     billDate: { type: Date },
     discount: { type: Number, default: 0 },
-    amount: { type: Number, default: 0 }  // Auto-calculated: price - discount
+    discountType: { type: String, enum: ['flat', 'percentage'], default: 'flat' },  // ₹ or %
+    amount: { type: Number, default: 0 }  // Auto-calculated based on discount type
   },
   createdAt: { 
     type: Date, 
