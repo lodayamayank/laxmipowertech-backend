@@ -601,17 +601,34 @@ const extractBasePOId = (poId) => {
 // UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
+    console.log('📥 Billing update request received');
+    console.log('   Delivery ID:', req.params.id);
+    console.log('   Request body keys:', Object.keys(req.body));
+    
     const { invoiceNumber, billDate, materialBilling, companyName } = req.body;
+    
+    // Validate materialBilling
+    if (!materialBilling || !Array.isArray(materialBilling)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid materialBilling data - must be an array'
+      });
+    }
+    
+    console.log('   Material billing items:', materialBilling.length);
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
     
     if (!delivery) {
+      console.error('❌ Delivery not found:', req.params.id);
       return res.status(404).json({
         success: false,
         message: 'Delivery not found'
       });
     }
+    
+    console.log('✅ Delivery found:', delivery.st_id);
     
     // Use user-entered invoice number or auto-generate from base PO ID as fallback
     const basePOId = extractBasePOId(delivery.transfer_number || delivery.st_id);
@@ -679,11 +696,12 @@ router.put('/:id/billing', protect, async (req, res) => {
       data: delivery
     });
   } catch (err) {
-    console.error('Update billing error:', err.message);
+    console.error('❌ Update billing error:', err.message);
+    console.error('   Error stack:', err.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to update billing details',
-      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
   }
 });
