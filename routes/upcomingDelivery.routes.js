@@ -601,6 +601,11 @@ const extractBasePOId = (poId) => {
 // UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
+    console.log('🚀 === BILLING UPDATE REQUEST START ===');
+    console.log('📥 Full req.body:', JSON.stringify(req.body, null, 2));
+    console.log('📦 req.body.materialBilling type:', typeof req.body.materialBilling);
+    console.log('📦 req.body.materialBilling:', req.body.materialBilling);
+    
     const { invoiceNumber, billDate, materialBilling, companyName } = req.body;
     
     // Find delivery
