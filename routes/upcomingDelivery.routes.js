@@ -621,60 +621,44 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log('🤖 Auto-generated fallback:', basePOId);
     console.log('✅ Using invoice number:', finalInvoiceNumber);
     
-    // Process material-wise billing
+    // Process material-wise billing with fixed 5% discount
     const processedMaterialBilling = [];
-    let totalAmount = 0;
-    let totalDiscountAmount = 0;
+    let totalPriceSum = 0;
+    let totalDiscountSum = 0;
     
     if (materialBilling && Array.isArray(materialBilling)) {
       materialBilling.forEach(material => {
         const quantity = parseFloat(material.quantity) || 0;
         const pricePerUnit = parseFloat(material.pricePerUnit) || 0;
-        const amount = quantity * pricePerUnit;
-        const discount = parseFloat(material.discount) || 0;
-        const discountType = material.discountType || 'flat';
-        
-        // Calculate discount amount and total per material
-        let discountAmount;
-        let materialTotal;
-        
-        if (discountType === 'percentage') {
-          discountAmount = amount * discount / 100;
-          materialTotal = amount - discountAmount;
-        } else {
-          discountAmount = discount;
-          materialTotal = amount - discount;
-        }
-        
-        // Ensure non-negative
-        materialTotal = Math.max(0, materialTotal);
+        const totalPrice = quantity * pricePerUnit;
+        const discountAmount = totalPrice * 0.05;  // Fixed 5% discount
+        const finalCost = totalPrice - discountAmount;
         
         processedMaterialBilling.push({
           materialId: material.materialId,
           materialName: material.materialName,
           quantity: quantity,
           pricePerUnit: pricePerUnit,
-          amount: amount,
-          discount: discount,
-          discountType: discountType,
-          totalAmount: materialTotal
+          totalPrice: totalPrice,
+          discountAmount: discountAmount,
+          finalCost: finalCost
         });
         
         // Accumulate totals
-        totalAmount += amount;
-        totalDiscountAmount += discountAmount;
+        totalPriceSum += totalPrice;
+        totalDiscountSum += discountAmount;
       });
     }
     
-    const finalAmount = totalAmount - totalDiscountAmount;
+    const finalAmount = totalPriceSum - totalDiscountSum;
     
     // Update billing information
     delivery.billing = {
       invoiceNumber: finalInvoiceNumber,  // Use user-entered or auto-generated
       billDate: billDate ? new Date(billDate) : null,
       materialBilling: processedMaterialBilling,
-      totalPrice: totalAmount,
-      totalDiscount: totalDiscountAmount,
+      totalPrice: totalPriceSum,
+      totalDiscount: totalDiscountSum,
       finalAmount: Math.max(0, finalAmount),
       companyName: companyName || 'Laxmi Powertech Private Limited'  // Accept company name
     };
