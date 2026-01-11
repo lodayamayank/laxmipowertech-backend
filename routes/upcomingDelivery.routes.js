@@ -606,7 +606,23 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log('📦 req.body.materialBilling type:', typeof req.body.materialBilling);
     console.log('📦 req.body.materialBilling:', req.body.materialBilling);
     
-    const { invoiceNumber, billDate, materialBilling, companyName } = req.body;
+    let { invoiceNumber, billDate, materialBilling, companyName } = req.body;
+    
+    // Handle if materialBilling comes as string (needs parsing) or array (already parsed)
+    if (typeof materialBilling === 'string') {
+      try {
+        materialBilling = JSON.parse(materialBilling);
+        console.log('✅ Parsed materialBilling from string to array');
+      } catch (e) {
+        console.error('❌ Failed to parse materialBilling string:', e.message);
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid materialBilling format'
+        });
+      }
+    }
+    
+    console.log('📦 Final materialBilling after parsing:', materialBilling);
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
