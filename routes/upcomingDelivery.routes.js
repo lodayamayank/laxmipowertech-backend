@@ -601,7 +601,7 @@ const extractBasePOId = (poId) => {
 // UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
-    const { billDate, materialBilling } = req.body;
+    const { invoiceNumber, billDate, materialBilling, companyName } = req.body;
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
@@ -613,8 +613,13 @@ router.put('/:id/billing', protect, async (req, res) => {
       });
     }
     
-    // Auto-generate invoice number from base PO ID
+    // Use user-entered invoice number or auto-generate from base PO ID as fallback
     const basePOId = extractBasePOId(delivery.transfer_number || delivery.st_id);
+    const finalInvoiceNumber = invoiceNumber || basePOId;
+    
+    console.log('📥 Backend received invoice number:', invoiceNumber);
+    console.log('🤖 Auto-generated fallback:', basePOId);
+    console.log('✅ Using invoice number:', finalInvoiceNumber);
     
     // Process material-wise billing
     const processedMaterialBilling = [];
@@ -661,19 +666,20 @@ router.put('/:id/billing', protect, async (req, res) => {
     
     // Update billing information
     delivery.billing = {
-      invoiceNumber: basePOId,
+      invoiceNumber: finalInvoiceNumber,  // Use user-entered or auto-generated
       billDate: billDate ? new Date(billDate) : null,
       materialBilling: processedMaterialBilling,
       totalPrice: totalPrice,
       totalDiscount: totalDiscountAmount,
-      finalAmount: Math.max(0, finalAmount)
+      finalAmount: Math.max(0, finalAmount),
+      companyName: companyName || 'Laxmi Powertech Private Limited'  // Accept company name
     };
     
     delivery.updatedAt = Date.now();
     await delivery.save();
     
     console.log(`✅ Material-wise billing updated for GRN ${delivery.st_id}`);
-    console.log(`   Invoice Number: ${basePOId}`);
+    console.log(`   Invoice Number: ${finalInvoiceNumber}`);
     console.log(`   Materials: ${processedMaterialBilling.length}`);
     console.log(`   Total Price: ₹${totalPrice.toFixed(2)}`);
     console.log(`   Total Discount: ₹${totalDiscountAmount.toFixed(2)}`);
