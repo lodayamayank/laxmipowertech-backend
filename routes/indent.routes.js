@@ -436,12 +436,14 @@ router.delete("/:id", auth, async (req, res) => {
     // Delete associated upcoming delivery
     await UpcomingDelivery.deleteMany({ st_id: req.params.id });
 
-    // Delete image file if exists
-    if (indent.imageUrl) {
-      const imagePath = path.join(__dirname, '..', indent.imageUrl);
-      if (fs.existsSync(imagePath)) {
-        fs.unlinkSync(imagePath);
-        console.log('✅ Deleted image file:', imagePath);
+    // Delete image from Cloudinary if exists
+    if (indent.imagePublicId) {
+      try {
+        await deleteFromCloudinary(indent.imagePublicId);
+        console.log('✅ Deleted Cloudinary image:', indent.imagePublicId);
+      } catch (cloudinaryErr) {
+        console.error('⚠️ Failed to delete Cloudinary image:', cloudinaryErr.message);
+        // Continue with indent deletion even if Cloudinary deletion fails
       }
     }
 
