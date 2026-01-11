@@ -669,8 +669,8 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log(`✅ Material-wise billing updated for GRN ${delivery.st_id}`);
     console.log(`   Invoice Number: ${finalInvoiceNumber}`);
     console.log(`   Materials: ${processedMaterialBilling.length}`);
-    console.log(`   Total Price: ₹${totalPrice.toFixed(2)}`);
-    console.log(`   Total Discount: ₹${totalDiscountAmount.toFixed(2)}`);
+    console.log(`   Total Price: ₹${totalPriceSum.toFixed(2)}`);
+    console.log(`   Total Discount: ₹${totalDiscountSum.toFixed(2)}`);
     console.log(`   Final Amount: ₹${finalAmount.toFixed(2)}`);
     
     res.json({
