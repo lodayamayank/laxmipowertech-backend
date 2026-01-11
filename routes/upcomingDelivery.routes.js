@@ -601,34 +601,17 @@ const extractBasePOId = (poId) => {
 // UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
-    console.log('📥 Billing update request received');
-    console.log('   Delivery ID:', req.params.id);
-    console.log('   Request body keys:', Object.keys(req.body));
-    
     const { invoiceNumber, billDate, materialBilling, companyName } = req.body;
-    
-    // Validate materialBilling
-    if (!materialBilling || !Array.isArray(materialBilling)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid materialBilling data - must be an array'
-      });
-    }
-    
-    console.log('   Material billing items:', materialBilling.length);
     
     // Find delivery
     const delivery = await UpcomingDelivery.findById(req.params.id);
     
     if (!delivery) {
-      console.error('❌ Delivery not found:', req.params.id);
       return res.status(404).json({
         success: false,
         message: 'Delivery not found'
       });
     }
-    
-    console.log('✅ Delivery found:', delivery.st_id);
     
     // Use user-entered invoice number or auto-generate from base PO ID as fallback
     const basePOId = extractBasePOId(delivery.transfer_number || delivery.st_id);
@@ -638,44 +621,77 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log('🤖 Auto-generated fallback:', basePOId);
     console.log('✅ Using invoice number:', finalInvoiceNumber);
     
-    // Process material-wise billing with fixed 5% discount
+    // Process material-wise billing
     const processedMaterialBilling = [];
-    let totalPriceSum = 0;
-    let totalDiscountSum = 0;
+    let totalPrice = 0;
+    let totalDiscountAmount = 0;
+    
+    console.log('🔍 Backend: Processing materialBilling');
+    console.log('📦 Received materialBilling:', JSON.stringify(materialBilling, null, 2));
+    console.log('📏 materialBilling length:', materialBilling?.length);
     
     if (materialBilling && Array.isArray(materialBilling)) {
-      materialBilling.forEach(material => {
-        const quantity = parseFloat(material.quantity) || 0;
-        const pricePerUnit = parseFloat(material.pricePerUnit) || 0;
-        const totalPrice = quantity * pricePerUnit;
-        const discountAmount = totalPrice * 0.05;  // Fixed 5% discount
-        const finalCost = totalPrice - discountAmount;
+      console.log('✅ materialBilling is valid array');
+      materialBilling.forEach((material, index) => {
+        console.log(`🔄 Processing material ${index}:`, material);
+        const price = parseFloat(material.price) || 0;
+        const discount = parseFloat(material.discount) || 0;
+        const discountType = material.discountType || 'flat';
+        
+        console.log(`   Price: ${material.price} → ${price}`);
+        console.log(`   Discount: ${material.discount} → ${discount}`);
+        console.log(`   Type: ${discountType}`);
+        
+        // Calculate total amount per material
+        let totalAmount;
+        let discountAmount;
+        
+        if (discountType === 'percentage') {
+          discountAmount = price * discount / 100;
+          totalAmount = price - discountAmount;
+        } else {
+          discountAmount = discount;
+          totalAmount = price - discount;
+        }
+        
+        // Ensure non-negative
+        totalAmount = Math.max(0, totalAmount);
+        
+        console.log(`   Calculated discountAmount: ${discountAmount}`);
+        console.log(`   Calculated totalAmount: ${totalAmount}`);
         
         processedMaterialBilling.push({
           materialId: material.materialId,
           materialName: material.materialName,
-          quantity: quantity,
-          pricePerUnit: pricePerUnit,
-          totalPrice: totalPrice,
-          discountAmount: discountAmount,
-          finalCost: finalCost
+          price: price,
+          discount: discount,
+          discountType: discountType,
+          totalAmount: totalAmount
         });
         
         // Accumulate totals
-        totalPriceSum += totalPrice;
-        totalDiscountSum += discountAmount;
+        totalPrice += price;
+        totalDiscountAmount += discountAmount;
+        console.log(`   Running totalPrice: ${totalPrice}`);
+        console.log(`   Running totalDiscountAmount: ${totalDiscountAmount}`);
       });
+    } else {
+      console.log('❌ materialBilling is NOT a valid array');
     }
     
-    const finalAmount = totalPriceSum - totalDiscountSum;
+    console.log('🎯 Final calculated values:');
+    console.log(`   totalPrice: ${totalPrice}`);
+    console.log(`   totalDiscountAmount: ${totalDiscountAmount}`);
+    
+    const finalAmount = totalPrice - totalDiscountAmount;
     
     // Update billing information
     delivery.billing = {
       invoiceNumber: finalInvoiceNumber,  // Use user-entered or auto-generated
       billDate: billDate ? new Date(billDate) : null,
       materialBilling: processedMaterialBilling,
-      totalPrice: totalPriceSum,
-      totalDiscount: totalDiscountSum,
+      totalPrice: totalPrice,
+      totalDiscount: totalDiscountAmount,
       finalAmount: Math.max(0, finalAmount),
       companyName: companyName || 'Laxmi Powertech Private Limited'  // Accept company name
     };
@@ -686,8 +702,8 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log(`✅ Material-wise billing updated for GRN ${delivery.st_id}`);
     console.log(`   Invoice Number: ${finalInvoiceNumber}`);
     console.log(`   Materials: ${processedMaterialBilling.length}`);
-    console.log(`   Total Price: ₹${totalPriceSum.toFixed(2)}`);
-    console.log(`   Total Discount: ₹${totalDiscountSum.toFixed(2)}`);
+    console.log(`   Total Price: ₹${totalPrice.toFixed(2)}`);
+    console.log(`   Total Discount: ₹${totalDiscountAmount.toFixed(2)}`);
     console.log(`   Final Amount: ₹${finalAmount.toFixed(2)}`);
     
     res.json({
@@ -696,12 +712,11 @@ router.put('/:id/billing', protect, async (req, res) => {
       data: delivery
     });
   } catch (err) {
-    console.error('❌ Update billing error:', err.message);
-    console.error('   Error stack:', err.stack);
+    console.error('Update billing error:', err.message);
     res.status(500).json({
       success: false,
       message: 'Failed to update billing details',
-      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
     });
   }
 });
