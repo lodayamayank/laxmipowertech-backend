@@ -584,7 +584,7 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
 
     if (req.files && req.files.length > 0) {
       // ✅ Use absolute URLs with backend domain for images
-      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
       const newAttachments = req.files.map(f => `${baseURL}/uploads/purchaseOrders/${f.filename}`);
       const existingOrder = await PurchaseOrder.findById(req.params.id);
       updateData.attachments = [...(existingOrder.attachments || []), ...newAttachments];

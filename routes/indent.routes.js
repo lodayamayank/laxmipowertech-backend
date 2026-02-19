@@ -490,7 +490,7 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
     }
 
     // ✅ Generate absolute file URL with backend domain
-    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
     const fileUrl = `${baseURL}/uploads/indents/${req.file.filename}`;
 
     console.log('✅ File uploaded successfully');

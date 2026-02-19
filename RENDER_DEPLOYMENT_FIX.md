@@ -190,19 +190,19 @@ git push origin main
 
 ```bash
 # Test material catalog
-curl https://laxmipowertech-backend.onrender.com/api/material/catalog/materials
+curl https://laxmipowertech-backend-1.onrender.com/api/material/catalog/materials
 
 # Test upcoming deliveries
-curl https://laxmipowertech-backend.onrender.com/api/material/upcoming-deliveries
+curl https://laxmipowertech-backend-1.onrender.com/api/material/upcoming-deliveries
 
 # Test site transfers
-curl https://laxmipowertech-backend.onrender.com/api/material/site-transfers
+curl https://laxmipowertech-backend-1.onrender.com/api/material/site-transfers
 
 # Test purchase orders
-curl https://laxmipowertech-backend.onrender.com/api/material/purchase-orders
+curl https://laxmipowertech-backend-1.onrender.com/api/material/purchase-orders
 
 # Test indents
-curl https://laxmipowertech-backend.onrender.com/api/indents
+curl https://laxmipowertech-backend-1.onrender.com/api/indents
 ```
 
 **Expected: All return 401 Unauthorized (if no token) or JSON data**  
@@ -216,7 +216,7 @@ curl https://laxmipowertech-backend.onrender.com/api/indents
 
 1. **Open in browser:**
    ```
-   https://laxmipowertech-backend.onrender.com/api/material/catalog/materials
+   https://laxmipowertech-backend-1.onrender.com/api/material/catalog/materials
    ```
 
 2. **Expected response:**
@@ -324,7 +324,7 @@ git push origin main
 
 **Test all endpoints:**
 ```bash
-BACKEND="https://laxmipowertech-backend.onrender.com/api"
+BACKEND="https://laxmipowertech-backend-1.onrender.com/api"
 
 echo "Testing Material Catalog..."
 curl $BACKEND/material/catalog/materials

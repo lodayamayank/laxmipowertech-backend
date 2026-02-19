@@ -347,7 +347,7 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
     const attachments = [];
     if (req.files && req.files.length > 0) {
       // Use absolute URLs with backend domain for images
-      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
       req.files.forEach(file => {
         attachments.push(`${baseURL}/uploads/siteTransfers/${file.filename}`);
       });
