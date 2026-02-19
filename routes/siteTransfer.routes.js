@@ -1,0 +1,494 @@
+import express from 'express';
+import SiteTransfer from '../models/SiteTransfer.js';
+import UpcomingDelivery from '../models/UpcomingDelivery.js';
+import { syncToUpcomingDelivery as syncServiceToUpcomingDelivery, deleteUpcomingDeliveryBySourceId } from '../utils/syncService.js';
+import protect from '../middleware/authMiddleware.js';
+import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAuthMiddleware.js';
+import { 
+  upload, 
+  uploadMultipleToCloudinary,
+  deleteFromCloudinary,
+  deleteMultipleFromCloudinary,
+  extractPublicId 
+} from '../middleware/cloudinaryMaterialMiddleware.js';
+
+const router = express.Router();
+
+// ✅ Generate unique siteTransferId matching PO pattern (ST20251223-XXXXX)
+const generateSiteTransferId = async () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const ymd = `${year}${month}${day}`;
+  
+  // Generate random 5-character alphanumeric suffix (matching PO pattern)
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let randomSuffix = '';
+  for (let i = 0; i < 5; i++) {
+    randomSuffix += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  
+  // Format: ST20251223-XXXXX (no dash after ST, matches PO20251223-RNN73 pattern)
+  const siteTransferId = `ST${ymd}-${randomSuffix}`;
+  
+  // Ensure uniqueness (very unlikely collision, but check anyway)
+  const existing = await SiteTransfer.findOne({ siteTransferId });
+  if (existing) {
+    // Recursive call if collision (extremely rare)
+    return generateSiteTransferId();
+  }
+  
+  return siteTransferId;
+};
+
+// Sync to UpcomingDelivery
+const syncToUpcomingDelivery = async (siteTransfer) => {
+  try {
+    const items = siteTransfer.materials.map(mat => ({
+      itemId: mat._id.toString(),
+      category: mat.itemName || '',
+      sub_category: '',
+      sub_category1: '',
+      st_quantity: mat.quantity || 0,
+      received_quantity: mat.received_quantity || 0,
+      is_received: mat.is_received || false
+    }));
+
+    // ✅ CRITICAL FIX: Map SiteTransfer status to UpcomingDelivery status
+    // MUST match PO workflow: approved → Partial (UpcomingDelivery enum doesn't have 'Approved')
+    // 🔧 CASE-INSENSITIVE: Handle both 'approved'/'Approved' and 'transferred'/'Transferred'
+    const statusLower = (siteTransfer.status || '').toLowerCase();
+    let deliveryStatus = 'Pending';
+    if (statusLower === 'transferred') deliveryStatus = 'Transferred';
+    else if (statusLower === 'approved') deliveryStatus = 'Partial';  // ✅ CRITICAL: Use 'Partial' not 'Approved' (matches PO workflow)
+    else if (statusLower === 'pending') deliveryStatus = 'Pending';
+    else if (statusLower === 'cancelled') deliveryStatus = 'Pending';  // ✅ Cancelled also maps to Pending
+    
+    console.log(`🔄 syncToUpcomingDelivery: ST ${siteTransfer.siteTransferId} - status='${siteTransfer.status}' → deliveryStatus='${deliveryStatus}'`);
+    
+    // ✅ CRITICAL: Auto-fill material quantities when status is Transferred
+    if (statusLower === 'transferred') {
+      console.log(`🔄 Status is Transferred - auto-filling all material received quantities`);
+      
+      // Auto-fill received quantities for all materials
+      let updated = false;
+      siteTransfer.materials.forEach(mat => {
+        const approvedQty = mat.quantity || 0;
+        if (!mat.received_quantity || mat.received_quantity === 0) {
+          mat.received_quantity = approvedQty;  // Auto-fill
+          mat.is_received = true;
+          updated = true;
+          console.log(`✅ Auto-filled ${mat.itemName}: received_quantity = ${approvedQty}`);
+        }
+      });
+      
+      // Save the updated Site Transfer with auto-filled quantities
+      if (updated) {
+        await siteTransfer.save();
+        console.log(`✅ Saved Site Transfer with auto-filled quantities`);
+      }
+    }
+    
+    // ✅ Check if all materials are fully received (override to Transferred)
+    const allFullyReceived = siteTransfer.materials.every(mat => {
+      const received = mat.received_quantity || 0;
+      const total = mat.quantity || 0;
+      return received >= total && total > 0;
+    });
+    
+    if (allFullyReceived && siteTransfer.materials.length > 0) {
+      deliveryStatus = 'Transferred';  // ✅ All items received = Transferred
+    }
+
+    const deliveryData = {
+      st_id: siteTransfer.siteTransferId,
+      transfer_number: siteTransfer.siteTransferId,
+      date: siteTransfer.requestDate,
+      from: siteTransfer.fromSite,
+      to: siteTransfer.toSite,
+      items: items,
+      status: deliveryStatus,  // ✅ Use mapped status instead of hardcoded 'Pending'
+      type: 'ST',
+      createdBy: siteTransfer.requestedBy,
+      attachments: siteTransfer.attachments || []  // ✅ SYNC ATTACHMENTS from Site Transfer to Upcoming Deliveries
+    };
+
+    const existing = await UpcomingDelivery.findOne({ st_id: siteTransfer.siteTransferId });
+    
+    if (existing) {
+      await UpcomingDelivery.findByIdAndUpdate(existing._id, deliveryData);
+    } else {
+      await UpcomingDelivery.create(deliveryData);
+    }
+  } catch (err) {
+    console.error('Sync to UpcomingDelivery failed:', err.message);
+  }
+};
+
+// CREATE site transfer
+router.post('/', upload.array('attachments', 10), async (req, res) => {
+  try {
+    let materials = req.body.materials;
+    if (typeof materials === 'string') {
+      try {
+        materials = JSON.parse(materials);
+      } catch (e) {
+        return res.status(400).json({ 
+          success: false,
+          message: 'Invalid materials format' 
+        });
+      }
+    }
+    
+    const { fromSite, toSite, requestedBy, status } = req.body;
+    
+    if (!fromSite || !toSite || !requestedBy) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Missing required fields: fromSite, toSite, requestedBy' 
+      });
+    }
+
+    const siteTransferId = await generateSiteTransferId();
+    
+    // ✅ UPLOAD ATTACHMENTS TO CLOUDINARY
+    let attachments = [];
+    if (req.files && req.files.length > 0) {
+      console.log(`☁️ Uploading ${req.files.length} attachments to Cloudinary...`);
+      const cloudinaryResults = await uploadMultipleToCloudinary(
+        req.files, 
+        'material-transfer/site-transfers'
+      );
+      attachments = cloudinaryResults.map(result => ({
+        url: result.url,
+        publicId: result.publicId
+      }));
+      console.log(`✅ Uploaded ${attachments.length} attachments to Cloudinary`);
+    }
+
+    const siteTransfer = new SiteTransfer({
+      siteTransferId,
+      fromSite,
+      toSite,
+      requestedBy,
+      materials: materials || [],
+      status: status || 'pending',
+      attachments,
+      requestDate: new Date()
+    });
+
+    await siteTransfer.save();
+    
+    // ✅ DO NOT sync to Upcoming Delivery on creation
+    // Sync only happens after admin approval (in update endpoint)
+    console.log(`✅ Site transfer created: ${siteTransferId} (status: ${siteTransfer.status})`);
+    console.log(`⏳ Waiting for admin approval before creating Upcoming Delivery`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Site transfer created successfully',
+      data: siteTransfer
+    });
+  } catch (err) {
+    console.error('Create site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// GET all site transfers with branch-based filtering
+router.get('/', protect, filterByUserBranches, async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    // Build query with branch filtering
+    let query = {};
+    query = applyBranchFilter(req, query, 'fromSite', 'toSite');
+
+    const transfers = await SiteTransfer.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await SiteTransfer.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: transfers,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (err) {
+    console.error('Get site transfers error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch site transfers',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// DELETE ALL site transfers - MUST BE BEFORE /:id route
+router.delete('/all', async (req, res) => {
+  try {
+    // Get all site transfer IDs before deletion
+    const siteTransfers = await SiteTransfer.find({}, 'siteTransferId');
+    const transferIds = siteTransfers.map(st => st.siteTransferId);
+    
+    // Delete all associated upcoming deliveries (using st_id which stores siteTransferId)
+    const deliveryResult = await UpcomingDelivery.deleteMany({
+      st_id: { $in: transferIds }
+    });
+    
+    console.log(`🗑️ Deleted ${deliveryResult.deletedCount} associated upcoming deliveries`);
+    
+    // Delete all site transfers
+    const result = await SiteTransfer.deleteMany({});
+    
+    res.json({
+      success: true,
+      message: `Successfully deleted all ${result.deletedCount} site transfers and ${deliveryResult.deletedCount} associated upcoming deliveries`,
+      deletedCount: result.deletedCount
+    });
+  } catch (err) {
+    console.error('Delete all site transfers error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete all site transfers',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// APPROVE site transfer - MUST BE BEFORE /:id routes (matches Intent PO workflow)
+router.put('/:id/approve', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+    
+    console.log('✅ Approving Site Transfer:', transfer.siteTransferId);
+    
+    // Update status to approved
+    transfer.status = 'approved';
+    await transfer.save();
+    
+    // Sync to Upcoming Delivery
+    await syncToUpcomingDelivery(transfer);
+    console.log(`✅ Site Transfer ${transfer.siteTransferId} approved and synced to Upcoming Deliveries`);
+    
+    res.json({
+      success: true,
+      message: 'Site transfer approved and synced to Upcoming Deliveries',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Approve site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// GET site transfer by ID
+router.get('/:id', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+    res.json({ success: true, data: transfer });
+  } catch (err) {
+    console.error('Get site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// UPDATE site transfer
+router.put('/:id', upload.array('attachments', 10), async (req, res) => {
+  try {
+    let materials = req.body.materials;
+    if (typeof materials === 'string') {
+      materials = JSON.parse(materials);
+    }
+
+    const updateData = {
+      fromSite: req.body.fromSite,
+      toSite: req.body.toSite,
+      requestedBy: req.body.requestedBy,
+      materials: materials,
+      status: req.body.status
+    };
+
+    const attachments = [];
+    if (req.files && req.files.length > 0) {
+      // Use absolute URLs with backend domain for images
+      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend.onrender.com';
+      req.files.forEach(file => {
+        attachments.push(`${baseURL}/uploads/siteTransfers/${file.filename}`);
+      });
+    }
+
+    const existingTransfer = await SiteTransfer.findById(req.params.id);
+    updateData.attachments = [...(existingTransfer.attachments || []), ...attachments];
+
+    const transfer = await SiteTransfer.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    // ✅ CRITICAL: Only sync to Upcoming Delivery when status is 'approved' or 'transferred'
+    // This matches the Intent lifecycle exactly: pending → NOT synced → approved → SYNCED to Upcoming Deliveries
+    // 🔧 CASE-INSENSITIVE: Handle both 'approved'/'Approved' and 'transferred'/'Transferred'
+    const statusLower = (transfer.status || '').toLowerCase();
+    const shouldSync = statusLower === 'approved' || statusLower === 'transferred';
+    
+    console.log(`🔍 SiteTransfer ${transfer.siteTransferId}: status='${transfer.status}' (lower='${statusLower}'), shouldSync=${shouldSync}`);
+    
+    if (shouldSync) {
+      await syncToUpcomingDelivery(transfer);
+      console.log(`✅ Synced SiteTransfer ${transfer.siteTransferId} to UpcomingDelivery (status: ${transfer.status})`);
+    } else {
+      console.log(`⏸️ Skipping sync for SiteTransfer ${transfer.siteTransferId} (status: ${transfer.status} - not approved yet)`);
+      
+      // ✅ Cleanup: If status changed FROM approved/transferred TO pending/cancelled, remove from UpcomingDelivery
+      if (statusLower === 'pending' || statusLower === 'cancelled') {
+        const existing = await UpcomingDelivery.findOne({ st_id: transfer.siteTransferId });
+        if (existing) {
+          await UpcomingDelivery.findByIdAndDelete(existing._id);
+          console.log(`�️ Removed SiteTransfer ${transfer.siteTransferId} from UpcomingDelivery (status reverted to ${transfer.status})`);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: 'Site transfer updated successfully',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Update site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// DELETE site transfer
+router.delete('/:id', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findByIdAndDelete(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    // ✅ Delete from UpcomingDelivery using sync service
+    await deleteUpcomingDeliveryBySourceId(transfer.siteTransferId);
+
+    // Delete attachments
+    if (transfer.attachments && transfer.attachments.length > 0) {
+      transfer.attachments.forEach(att => {
+        const filePath = path.join(__dirname, '..', att);
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Site transfer deleted successfully'
+    });
+  } catch (err) {
+    console.error('Delete site transfer error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete site transfer',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+// DELETE attachment
+router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
+  try {
+    const transfer = await SiteTransfer.findById(req.params.id);
+    if (!transfer) {
+      return res.status(404).json({
+        success: false,
+        message: 'Site transfer not found'
+      });
+    }
+
+    const index = parseInt(req.params.attachmentIndex);
+    if (index < 0 || index >= transfer.attachments.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid attachment index'
+      });
+    }
+
+    const attachmentPath = transfer.attachments[index];
+    const filePath = path.join(__dirname, '..', attachmentPath);
+    
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+
+    transfer.attachments.splice(index, 1);
+    await transfer.save();
+
+    res.json({
+      success: true,
+      message: 'Attachment deleted successfully',
+      data: transfer
+    });
+  } catch (err) {
+    console.error('Delete attachment error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete attachment',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
+
+export default router;
