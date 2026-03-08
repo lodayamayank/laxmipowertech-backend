@@ -22,6 +22,7 @@ import reimbursementRoutes from './routes/reimbursement.routes.js';
 import salaryRoutes from './routes/salary.routes.js';
 import salarySlipRoutes from './routes/salarySlip.js';
 import indentRoutes from './routes/indent.routes.js';
+import taskRoutes from './routes/task.routes.js';
 
 // Material Management Routes
 import materialCatalogRoutes from './routes/materialCatalog.routes.js';
@@ -40,6 +41,7 @@ const uploadDirs = [
   path.join(__dirname, 'uploads/siteTransfers'),
   path.join(__dirname, 'uploads/purchaseOrders'),
   path.join(__dirname, 'uploads/indents'),
+  path.join(__dirname, 'uploads/tasks'),
   path.join(__dirname, 'tmp_uploads')
 ];
 
@@ -72,7 +74,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://localhost:5174',
   'http://127.0.0.1:5173',
   'https://laxmipowertech-frontend.onrender.com',
-  'https://laxmi-power-tech-project.vercel.app'
+  'https://laxmipower-tech.vercel.app'
 ];
 
 app.use(cors({
@@ -125,6 +127,7 @@ app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/salary', salaryRoutes);
 app.use('/api/salary-slips', salarySlipRoutes);
 app.use('/api/indents', indentRoutes);
+app.use('/api/tasks', taskRoutes);
 
 // Material Management Routes
 app.use('/api/material/catalog', materialCatalogRoutes);
