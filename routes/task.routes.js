@@ -83,6 +83,7 @@ router.get('/', auth, filterByUserBranches, async (req, res) => {
   try {
     const { 
       project, 
+      branch,
       building, 
       wing, 
       floor, 
@@ -104,6 +105,7 @@ router.get('/', auth, filterByUserBranches, async (req, res) => {
 
     // Apply filters
     if (project) filter.project = project;
+    if (branch) filter.branch = branch;
     if (building) filter['building.name'] = { $regex: building, $options: 'i' };
     if (wing) filter['wing.name'] = { $regex: wing, $options: 'i' };
     if (floor) filter['floor.name'] = { $regex: floor, $options: 'i' };
