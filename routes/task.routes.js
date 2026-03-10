@@ -51,7 +51,7 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
       photoUrl: cloudinaryResult.url,
       photoPublicId: cloudinaryResult.publicId,
       notes: notes || '',
-      status: 'completed'
+      status: 'pending'
     });
 
     await task.save();
@@ -205,7 +205,7 @@ router.put('/:id/status', auth, async (req, res) => {
     }
 
     const { status } = req.body;
-    const validStatuses = ['pending', 'in-progress', 'completed', 'verified'];
+    const validStatuses = ['pending', 'in-progress', 'completed', 'verified', 'approved', 'rejected'];
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({ 
@@ -219,7 +219,59 @@ router.put('/:id/status', auth, async (req, res) => {
       { status },
       { new: true }
     ).populate('supervisor', 'name email role')
-     .populate('project', 'name address');
+     .populate('project', 'name address')
+     .populate('branch', 'name address');
+
+    if (!task) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Task not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Task status updated successfully',
+      data: task
+    });
+  } catch (err) {
+    console.error('Error updating task status:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to update task status', 
+      error: err.message 
+    });
+  }
+});
+
+// PATCH endpoint for task status (same as PUT, for compatibility)
+router.patch('/:id/status', auth, async (req, res) => {
+  try {
+    // Only admin can update task status
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Only admins can update task status' 
+      });
+    }
+
+    const { status } = req.body;
+    const validStatuses = ['pending', 'in-progress', 'completed', 'verified', 'approved', 'rejected'];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({ 
+        success: false,
+        message: `Invalid status. Valid statuses: ${validStatuses.join(', ')}` 
+      });
+    }
+
+    const task = await Task.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true }
+    ).populate('supervisor', 'name email role')
+     .populate('project', 'name address')
+     .populate('branch', 'name address');
 
     if (!task) {
       return res.status(404).json({ 
