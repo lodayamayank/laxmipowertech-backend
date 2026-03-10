@@ -48,8 +48,8 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
       flat: flatData,
       room: roomData,
       supervisor: req.user.id,
-      photoUrl: cloudinaryResult.secure_url,
-      photoPublicId: cloudinaryResult.public_id,
+      photoUrl: cloudinaryResult.url,
+      photoPublicId: cloudinaryResult.publicId,
       notes: notes || '',
       status: 'completed'
     });
