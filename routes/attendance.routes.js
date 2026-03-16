@@ -477,6 +477,111 @@ router.get('/live', authMiddleware, async (req, res) => {
 });
 
 
+// ✅ POST: Bulk Attendance (for Labour Management)
+router.post('/bulk', authMiddleware, async (req, res) => {
+  console.log('🔥 HIT /api/attendance/bulk route');
+  console.log('📦 Request body:', req.body);
+  try {
+    const { records } = req.body;
+
+    if (!Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ message: 'Records array is required' });
+    }
+
+    const results = [];
+    const errors = [];
+
+    for (const record of records) {
+      const { user, branch, status, date } = record;
+
+      if (!user || !status || !date) {
+        errors.push({ user, message: 'Missing required fields' });
+        continue;
+      }
+
+      try {
+        // Check if attendance already exists for this user on this date
+        const existingAttendance = await Attendance.findOne({
+          user,
+          date: new Date(date)
+        });
+
+        if (existingAttendance) {
+          // Update existing attendance
+          existingAttendance.punchType = status; // 'present', 'absent', 'half-day'
+          existingAttendance.updatedAt = new Date();
+          await existingAttendance.save();
+          results.push(existingAttendance);
+        } else {
+          // Create new attendance record
+          const attendance = new Attendance({
+            user,
+            branch,
+            punchType: status,
+            date: new Date(date),
+            lat: 0, // Labour attendance doesn't require location
+            lng: 0,
+            location: 'Marked by Supervisor',
+            selfieUrl: null,
+            createdAt: new Date(),
+            updatedAt: new Date()
+          });
+          await attendance.save();
+          results.push(attendance);
+        }
+      } catch (err) {
+        errors.push({ user, message: err.message });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(207).json({
+        message: 'Partial success',
+        results,
+        errors
+      });
+    }
+
+    res.status(201).json({
+      message: 'Attendance marked successfully',
+      results
+    });
+  } catch (err) {
+    console.error('Bulk attendance error:', err);
+    res.status(500).json({ message: 'Failed to mark attendance', error: err.message });
+  }
+});
+
+// ✅ GET: Fetch attendance by branch and date (for Labour Management)
+router.get('/by-date', authMiddleware, async (req, res) => {
+  console.log('🔥 HIT /api/attendance/by-date route');
+  console.log('📦 Query params:', req.query);
+  try {
+    const { branch, date } = req.query;
+
+    if (!date) {
+      return res.status(400).json({ message: 'Date is required' });
+    }
+
+    const query = {
+      date: new Date(date)
+    };
+
+    if (branch) {
+      query.branch = branch;
+    }
+
+    const attendance = await Attendance.find(query)
+      .populate('user', 'name username mobileNumber jobTitle role')
+      .lean();
+
+    res.json(attendance);
+  } catch (err) {
+    console.error('Fetch attendance by date error:', err);
+    res.status(500).json({ message: 'Failed to fetch attendance', error: err.message });
+  }
+});
+
 // ✅ GET note for user+date
 router.get('/notes/:userId/:date', authMiddleware, async (req, res) => {
   try {

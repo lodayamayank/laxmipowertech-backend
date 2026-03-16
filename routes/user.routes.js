@@ -82,10 +82,23 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ Get all users
+// ✅ Get all users (with optional filtering by role and branch)
 router.get('/', authMiddleware, async (req, res) => {
   try {
-    const users = await User.find()
+    const { role, branch } = req.query;
+    const filter = {};
+    
+    // Filter by role if provided
+    if (role) {
+      filter.role = role;
+    }
+    
+    // Filter by branch if provided
+    if (branch) {
+      filter.assignedBranches = branch;
+    }
+    
+    const users = await User.find(filter)
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
     res.json(users);

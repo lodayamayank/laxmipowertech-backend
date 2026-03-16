@@ -14,6 +14,19 @@ router.get('/', authMiddleware, async (req, res) => {
   }
 });
 
+// GET single branch by ID
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const branch = await Branch.findById(req.params.id);
+    if (!branch) {
+      return res.status(404).json({ message: 'Branch not found' });
+    }
+    res.json(branch);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch branch', error: err.message });
+  }
+});
+
 // POST create a new branch
 router.post('/', authMiddleware, async (req, res) => {
   try {
