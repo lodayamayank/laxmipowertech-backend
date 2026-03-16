@@ -144,6 +144,24 @@ router.put('/me', authMiddleware, async (req, res) => {
   }
 });
 
+// ✅ Get single user by ID
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id)
+      .populate('project', 'name')
+      .populate('assignedBranches', 'name radius lat lng address');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    res.json(user);
+  } catch (err) {
+    console.error('Failed to fetch user:', err);
+    res.status(500).json({ message: 'Failed to fetch user', error: err.message });
+  }
+});
+
 // ✅ Update user by ID (with optional password hashing + safe default)
 router.put('/:id', authMiddleware, async (req, res) => {
   try {
