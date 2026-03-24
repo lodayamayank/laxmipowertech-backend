@@ -19,6 +19,10 @@ const taskSchema = new mongoose.Schema({
     id: String,
     name: { type: String, required: true }
   },
+  level3Activity: {
+    id: String,
+    name: { type: String } // New Level 3: Slab Conduiting, Box Fixing, Wiring, Switch Plate, Testing And Commissioning
+  },
   floor: {
     id: String,
     name: { type: String, required: true }
