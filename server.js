@@ -24,6 +24,9 @@ import salarySlipRoutes from './routes/salarySlip.js';
 import indentRoutes from './routes/indent.routes.js';
 import taskRoutes from './routes/task.routes.js';
 
+// Work Order Management Routes
+import workOrderRoutes from './routes/workOrder.routes.js';
+
 // Material Management Routes
 import materialCatalogRoutes from './routes/materialCatalog.routes.js';
 import siteTransferRoutes from './routes/siteTransfer.routes.js';
@@ -130,6 +133,7 @@ app.use('/api/salary', salaryRoutes);
 app.use('/api/salary-slips', salarySlipRoutes);
 app.use('/api/indents', indentRoutes);
 app.use('/api/tasks', taskRoutes);
+app.use('/api/work-orders', workOrderRoutes);
 
 // Material Management Routes
 app.use('/api/material/catalog', materialCatalogRoutes);
