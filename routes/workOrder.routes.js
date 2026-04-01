@@ -124,20 +124,53 @@ router.patch('/:id/status', auth, async (req, res) => {
       return res.status(400).json({ success: false, message: `Invalid status. Valid values: ${validStatuses.join(', ')}` });
     }
 
-    const workOrder = await WorkOrder.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true }
-    ).populate('project', 'name').populate('createdBy', 'name email');
-
+    const workOrder = await WorkOrder.findById(req.params.id);
     if (!workOrder) {
       return res.status(404).json({ success: false, message: 'Work order not found' });
     }
+
+    if (workOrder.isTriggered) {
+      return res.status(403).json({ success: false, message: 'This Work Order has been triggered and is locked. No changes are allowed.' });
+    }
+
+    workOrder.status = status;
+    await workOrder.save();
+    await workOrder.populate('project', 'name');
+    await workOrder.populate('createdBy', 'name email');
 
     res.json({ success: true, message: 'Status updated', data: workOrder });
   } catch (err) {
     console.error('Error updating status:', err);
     res.status(500).json({ success: false, message: 'Failed to update status', error: err.message });
+  }
+});
+
+// PATCH /api/work-orders/:id/trigger — Trigger (lock) a work order
+router.patch('/:id/trigger', auth, async (req, res) => {
+  try {
+    const workOrder = await WorkOrder.findById(req.params.id);
+    if (!workOrder) {
+      return res.status(404).json({ success: false, message: 'Work order not found' });
+    }
+
+    if (workOrder.isTriggered) {
+      return res.status(400).json({ success: false, message: 'Work Order is already triggered and locked.' });
+    }
+
+    workOrder.isTriggered = true;
+    workOrder.status = 'triggered';
+    workOrder.triggeredAt = new Date();
+    workOrder.triggeredBy = req.user.id;
+    await workOrder.save();
+
+    await workOrder.populate('project', 'name');
+    await workOrder.populate('createdBy', 'name email');
+    await workOrder.populate('triggeredBy', 'name email');
+
+    res.json({ success: true, message: 'Work Order triggered and locked successfully.', data: workOrder });
+  } catch (err) {
+    console.error('Error triggering work order:', err);
+    res.status(500).json({ success: false, message: 'Failed to trigger work order', error: err.message });
   }
 });
 
@@ -180,6 +213,11 @@ router.post('/:workOrderId/bills', auth, async (req, res) => {
     const workOrder = await WorkOrder.findById(req.params.workOrderId);
     if (!workOrder) {
       return res.status(404).json({ success: false, message: 'Work order not found' });
+    }
+
+    // Guard: block bill additions on triggered (locked) work orders
+    if (workOrder.isTriggered) {
+      return res.status(403).json({ success: false, message: 'This Work Order has been triggered and is locked. No new bills can be added.' });
     }
 
     // CRITICAL BUSINESS RULE: Total bills cannot exceed Work Order total value

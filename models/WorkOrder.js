@@ -41,8 +41,21 @@ const workOrderSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['active', 'completed', 'on-hold', 'cancelled'],
+    enum: ['active', 'completed', 'on-hold', 'cancelled', 'triggered'],
     default: 'active'
+  },
+  isTriggered: {
+    type: Boolean,
+    default: false
+  },
+  triggeredAt: {
+    type: Date,
+    default: null
+  },
+  triggeredBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
   },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
