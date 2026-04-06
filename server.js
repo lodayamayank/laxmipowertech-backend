@@ -33,6 +33,7 @@ import siteTransferRoutes from './routes/siteTransfer.routes.js';
 import purchaseOrderRoutes from './routes/purchaseOrder.routes.js';
 import upcomingDeliveryRoutes from './routes/upcomingDelivery.routes.js';
 import reportsRoutes from './routes/reports.routes.js';
+import labourRoutes from './routes/labour.routes.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -142,6 +143,7 @@ app.use('/api/material/site-transfers', siteTransferRoutes);
 app.use('/api/material/purchase-orders', purchaseOrderRoutes);
 app.use('/api/material/upcoming-deliveries', upcomingDeliveryRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/labour', labourRoutes);
 
 // Debug logging for route registration
 console.log('✅ Material routes mounted:');
