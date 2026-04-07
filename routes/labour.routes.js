@@ -47,7 +47,7 @@ router.get('/overview', authMiddleware, async (req, res) => {
 
     const labourDocs = await User.find(labourQuery)
       .populate('project', 'name _id')
-      .populate('assignedBranches', 'name')
+      .populate('assignedBranches', 'name _id')
       .lean();
 
     if (!labourDocs.length) {
@@ -91,9 +91,9 @@ router.get('/overview', authMiddleware, async (req, res) => {
 
     const summary = {
       totalLabours: labourDocs.length,
-      totalMonthlySalary: 0,
-      paidThisPeriod: 0,
-      pendingThisPeriod: 0,
+      totalSalary: 0,
+      totalPaid: 0,
+      totalPending: 0,
     };
 
     const labours = labourDocs.map((labour) => {
@@ -103,11 +103,17 @@ router.get('/overview', authMiddleware, async (req, res) => {
       const workingHours = labour.standardDailyHours || null;
       const jobRole = labour.jobTitle || (labour.role === 'labour' ? 'Labour' : labour.role);
       const project = labour.project
-        ? { id: labour.project._id, name: labour.project.name }
+        ? { id: labour.project._id?.toString?.() || labour.project._id, name: labour.project.name }
         : null;
-      const branchNames = Array.isArray(labour.assignedBranches)
-        ? labour.assignedBranches.map((branch) => branch?.name).filter(Boolean)
-        : [];
+      const branchDocs = Array.isArray(labour.assignedBranches) ? labour.assignedBranches : [];
+      const primaryBranchDoc = branchDocs.length > 0 ? branchDocs[0] : null;
+      const branchNames = branchDocs.map((branch) => branch?.name).filter(Boolean);
+      const branch = primaryBranchDoc
+        ? {
+            id: primaryBranchDoc._id?.toString?.() || primaryBranchDoc._id,
+            name: primaryBranchDoc.name,
+          }
+        : null;
       const joiningDate = labour.dateOfJoining || labour.createdAt || null;
 
       const userSlips = slipsByUser.get(userId) || [];
@@ -136,9 +142,9 @@ router.get('/overview', authMiddleware, async (req, res) => {
         paymentStatus = monthlySalary ? 'pending' : 'not_configured';
       }
 
-      summary.totalMonthlySalary += monthlySalary;
-      summary.paidThisPeriod += paidThisPeriod;
-      summary.pendingThisPeriod += pendingThisPeriod;
+      summary.totalSalary += monthlySalary;
+      summary.totalPaid += paidThisPeriod;
+      summary.totalPending += pendingThisPeriod;
 
       return {
         id: labour._id,
@@ -146,6 +152,7 @@ router.get('/overview', authMiddleware, async (req, res) => {
         username: labour.username,
         role: jobRole,
         project,
+        branch,
         branchNames,
         salaryType,
         workingHours,
@@ -158,16 +165,66 @@ router.get('/overview', authMiddleware, async (req, res) => {
       };
     });
 
+    const groupMap = new Map();
+
+    labours.forEach((labour) => {
+      const projectIdKey = labour.project?.id?.toString?.() || 'unassigned-project';
+      const projectName = labour.project?.name || 'Unassigned Project';
+      const branchIdKey = labour.branch?.id?.toString?.() || 'unassigned-branch';
+      const branchName = labour.branch?.name || 'Unassigned Branch';
+      const mapKey = `${projectIdKey}::${branchIdKey}`;
+
+      if (!groupMap.has(mapKey)) {
+        groupMap.set(mapKey, {
+          projectId: labour.project?.id || null,
+          projectName,
+          branchId: labour.branch?.id || null,
+          branchName,
+          totalLabours: 0,
+          totalSalary: 0,
+          totalPaid: 0,
+          totalPending: 0,
+          labours: [],
+        });
+      }
+
+      const group = groupMap.get(mapKey);
+      group.totalLabours += 1;
+      group.totalSalary += labour.monthlySalary;
+      group.totalPaid += labour.paidThisPeriod;
+      group.totalPending += labour.pendingThisPeriod;
+      group.labours.push({
+        id: labour.id,
+        name: labour.name,
+        username: labour.username,
+        role: labour.role,
+        project: projectName,
+        branch: branchName,
+        workingHours: labour.workingHours,
+        monthlySalary: labour.monthlySalary,
+        paidAmount: labour.paidThisPeriod,
+        pendingAmount: labour.pendingThisPeriod,
+        paymentStatus: labour.paymentStatus,
+        dateOfJoining: labour.dateOfJoining,
+        salaryHistory: labour.salaryHistory,
+      });
+    });
+
+    const groups = Array.from(groupMap.values()).map((group) => ({
+      ...group,
+      totalSalary: Number(group.totalSalary || 0),
+      totalPaid: Number(group.totalPaid || 0),
+      totalPending: Number(group.totalPending || 0),
+    }));
+
     res.json({
       success: true,
-      data: {
-        summary,
-        filters: {
-          month: targetMonth,
-          year: targetYear,
-          projectId,
-        },
-        labours,
+      data: groups,
+      summary,
+      filters: {
+        month: targetMonth,
+        year: targetYear,
+        projectId,
       },
     });
   } catch (error) {
