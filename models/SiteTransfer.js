@@ -57,7 +57,6 @@ SiteTransferSchema.pre('save', function(next) {
   next();
 });
 
-SiteTransferSchema.index({ siteTransferId: 1 });
 SiteTransferSchema.index({ status: 1 });
 SiteTransferSchema.index({ createdAt: -1 });
 SiteTransferSchema.index({ fromSite: 1, toSite: 1 });

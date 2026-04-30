@@ -58,7 +58,6 @@ PurchaseOrderSchema.pre('save', function(next) {
   next();
 });
 
-PurchaseOrderSchema.index({ purchaseOrderId: 1 });
 PurchaseOrderSchema.index({ status: 1 });
 PurchaseOrderSchema.index({ createdAt: -1 });
 PurchaseOrderSchema.index({ deliverySite: 1 });

@@ -1,14 +1,14 @@
-import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 import User from './models/User.js';
+import connectDB from './config/db.js';
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 const createAdmin = async () => {
   try {
     console.log('🔌 Connecting to MongoDB...');
-    await mongoose.connect(process.env.MONGO_URI);
+    await connectDB(process.env.MONGO_URI);
     console.log('✅ MongoDB connected successfully\n');
 
     // Delete existing admin user first

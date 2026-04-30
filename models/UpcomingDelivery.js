@@ -119,7 +119,6 @@ UpcomingDeliverySchema.pre('save', function(next) {
 });
 
 UpcomingDeliverySchema.index({ st_id: 1 });
-UpcomingDeliverySchema.index({ transfer_number: 1 });
 UpcomingDeliverySchema.index({ status: 1 });
 UpcomingDeliverySchema.index({ type: 1 });
 UpcomingDeliverySchema.index({ createdAt: -1 });
