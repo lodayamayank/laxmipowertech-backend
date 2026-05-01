@@ -32,4 +32,6 @@ const ReimbursementSchema = new mongoose.Schema({
   paymentMethod: { type: String, enum: ["cash", "bank", "upi"], default: "bank" },
 }, { timestamps: true });
 
+ReimbursementSchema.index({ user: 1, status: 1, submittedAt: 1 });
+
 export default mongoose.model("Reimbursement", ReimbursementSchema);

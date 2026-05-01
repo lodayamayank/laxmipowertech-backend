@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import mongoSanitize from 'express-mongo-sanitize';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -20,6 +19,10 @@ import leaveRoutes from './routes/leaves.routes.js';
 import reimbursementRoutes from './routes/reimbursement.routes.js';
 import salaryRoutes from './routes/salary.routes.js';
 import salarySlipRoutes from './routes/salarySlip.js';
+import holidayRoutes from './routes/holiday.routes.js';
+import salaryPolicyRoutes from './routes/salaryPolicy.routes.js';
+import payrollJobRoutes from './routes/payrollJob.routes.js';
+import { startPayrollScheduler } from './jobs/payrollScheduler.js';
 import indentRoutes from './routes/indent.routes.js';
 import taskRoutes from './routes/task.routes.js';
 import workOrderRoutes from './routes/workOrder.routes.js';
@@ -52,6 +55,19 @@ for (const dir of uploadDirs) {
   }
 }
 
+// express-mongo-sanitize is incompatible with Express 5 (req.query is a read-only getter).
+// Inline replacement: strips keys starting with '$' or containing '.' from body and params.
+function sanitizeMongo(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  for (const key of Object.keys(obj)) {
+    if (key.startsWith('$') || key.includes('.')) {
+      delete obj[key];
+    } else if (typeof obj[key] === 'object') {
+      sanitizeMongo(obj[key]);
+    }
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = (process.env.MONGO_URI || '').trim();
@@ -67,7 +83,11 @@ app.use(
     crossOriginEmbedderPolicy: false,
   })
 );
-app.use(mongoSanitize());
+app.use((req, _res, next) => {
+  sanitizeMongo(req.body);
+  sanitizeMongo(req.params);
+  next();
+});
 
 if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
@@ -118,6 +138,9 @@ app.use('/api/leaves', leaveRoutes);
 app.use('/api/reimbursements', reimbursementRoutes);
 app.use('/api/salary', salaryRoutes);
 app.use('/api/salary-slips', salarySlipRoutes);
+app.use('/api/holidays', holidayRoutes);
+app.use('/api/salary-policy', salaryPolicyRoutes);
+app.use('/api/payroll-jobs', payrollJobRoutes);
 app.use('/api/indents', indentRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/work-orders', workOrderRoutes);
@@ -131,6 +154,7 @@ app.use('/api/labour', labourRoutes);
 async function start() {
   try {
     await connectDB(MONGO_URI);
+    startPayrollScheduler();
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server is running on port ${PORT}`);

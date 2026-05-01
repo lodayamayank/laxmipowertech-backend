@@ -337,19 +337,20 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admins only.' });
     }
 
-    const { 
-      ctcAmount, 
-      salaryType, 
+    const {
+      ctcAmount,
+      salaryType,
       salaryEffectiveDate,
       perDayTravelAllowance,
       railwayPassAmount,
       standardDailyHours,
-      overtimeRateMultiplier 
+      overtimeRateMultiplier,
+      otherAmount,
+      otherAmountType,
     } = req.body;
 
     const updateData = {};
-    
-    // Only include fields that are provided
+
     if (ctcAmount !== undefined) updateData.ctcAmount = ctcAmount;
     if (salaryType !== undefined) updateData.salaryType = salaryType;
     if (salaryEffectiveDate !== undefined) updateData.salaryEffectiveDate = salaryEffectiveDate;
@@ -357,6 +358,8 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
     if (railwayPassAmount !== undefined) updateData.railwayPassAmount = railwayPassAmount;
     if (standardDailyHours !== undefined) updateData.standardDailyHours = standardDailyHours;
     if (overtimeRateMultiplier !== undefined) updateData.overtimeRateMultiplier = overtimeRateMultiplier;
+    if (otherAmount !== undefined) updateData.otherAmount = otherAmount;
+    if (otherAmountType !== undefined) updateData.otherAmountType = otherAmountType;
 
     const updatedUser = await User.findByIdAndUpdate(
       req.params.id,

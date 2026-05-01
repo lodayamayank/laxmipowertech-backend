@@ -32,4 +32,6 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+attendanceSchema.index({ user: 1, date: 1 });
+
 export default mongoose.model("Attendance", attendanceSchema);
