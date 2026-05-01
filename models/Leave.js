@@ -20,4 +20,6 @@ const LeaveSchema = new mongoose.Schema({
   approvedAt: { type: Date }, // new
 }, { timestamps: true });
 
+LeaveSchema.index({ user: 1, status: 1, startDate: 1, endDate: 1 });
+
 export default mongoose.model("Leave", LeaveSchema);

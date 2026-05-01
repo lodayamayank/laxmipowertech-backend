@@ -39,6 +39,8 @@ const salarySlipSchema = new mongoose.Schema(
       railwayPassAmount: Number,
       standardDailyHours: Number,
       overtimeRateMultiplier: Number,
+      otherAmount: Number,
+      otherAmountType: String,
     },
     
     // Attendance Summary
@@ -98,7 +100,10 @@ const salarySlipSchema = new mongoose.Schema(
       multiplier: Number,
       total: Number,
     },
-    
+
+    otherAmount: { type: Number, default: 0 },
+    otherAmountType: { type: String, enum: ['earning', 'deduction'], default: 'earning' },
+
     // Final Salary
     netSalary: {
       type: Number,
