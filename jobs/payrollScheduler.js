@@ -3,7 +3,7 @@ import SalarySlip from '../models/SalarySlip.js';
 import SalaryCache from '../models/SalaryCache.js';
 import { calculateSalaryForPeriod } from '../services/salary.service.js';
 
-// Idempotency key store (in-memory — sufficient for single-instance; use Redis for multi-instance)
+
 const runningJobs = new Set();
 
 function getIdempotencyKey(year, month, jobType) {
