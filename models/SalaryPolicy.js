@@ -9,6 +9,10 @@ const salaryPolicySchema = new mongoose.Schema({
     type: [String],
     default: ['labour'],
   },
+  overtimeEligibleRoles: {
+    type: [String],
+    default: ['staff', 'supervisor', 'subcontractor', 'labour'],
+  },
 }, { timestamps: true });
 
 export default mongoose.model('SalaryPolicy', salaryPolicySchema);

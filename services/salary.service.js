@@ -26,6 +26,7 @@ async function getSalaryPolicy() {
   return policy || {
     holidayPaidLeaveEligibleRoles: ['staff', 'supervisor'],
     sundayHolidayExcludedRoles: ['labour'],
+    overtimeEligibleRoles: ['staff', 'supervisor', 'subcontractor', 'labour'],
   };
 }
 
@@ -253,6 +254,7 @@ export async function calculateSalaryForPeriod({ month, year, role, userId }) {
     const uid = user._id.toString();
     const isLabour = user.role === 'labour';
     const holidayPaidLeave = policy.holidayPaidLeaveEligibleRoles.includes(user.role);
+    const overtimeEligible = (policy.overtimeEligibleRoles || []).includes(user.role);
 
     const userAttendance = attendanceByUser[uid] || [];
     const userLeaves = leavesByUser[uid] || [];
@@ -308,10 +310,10 @@ export async function calculateSalaryForPeriod({ month, year, role, userId }) {
     // Reimbursements from bulk map
     const reimbSummary = reimbursementsByUser[uid] || { total: 0, count: 0, details: [] };
 
-    // Overtime — formula: grossMonthly / 30 / 9 * hours * multiplier (11.5)
+    // Overtime — only for eligible roles per policy
     const overtimeMultiplier = user.overtimeRateMultiplier || 1.0;
-    const overtimeBaseHourly = grossMonthly > 0 ? grossMonthly / 30 / 9 : 0;
-    const overtimeTotal = Math.round(attendance.totalOvertimeHours * overtimeBaseHourly * overtimeMultiplier);
+    const overtimeBaseHourly = (overtimeEligible && grossMonthly > 0) ? grossMonthly / 30 / 9 : 0;
+    const overtimeTotal = overtimeEligible ? Math.round(attendance.totalOvertimeHours * overtimeBaseHourly * overtimeMultiplier) : 0;
     const perHourRate = Math.round(overtimeBaseHourly);
 
     // Deductions

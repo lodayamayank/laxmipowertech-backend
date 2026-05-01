@@ -14,6 +14,7 @@ router.get('/', authMiddleware, async (req, res) => {
     res.json(policy || {
       holidayPaidLeaveEligibleRoles: ['staff', 'supervisor'],
       sundayHolidayExcludedRoles: ['labour'],
+      overtimeEligibleRoles: ['staff', 'supervisor', 'subcontractor', 'labour'],
     });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch salary policy', error: err.message });
@@ -27,7 +28,7 @@ router.put('/', authMiddleware, async (req, res) => {
       return res.status(403).json({ message: 'Access denied. Admins only.' });
     }
 
-    const { holidayPaidLeaveEligibleRoles, sundayHolidayExcludedRoles } = req.body;
+    const { holidayPaidLeaveEligibleRoles, sundayHolidayExcludedRoles, overtimeEligibleRoles } = req.body;
 
     const PAYROLL_ROLES = ['staff', 'supervisor', 'subcontractor', 'labour'];
     const update = {};
@@ -36,6 +37,9 @@ router.put('/', authMiddleware, async (req, res) => {
     }
     if (sundayHolidayExcludedRoles) {
       update.sundayHolidayExcludedRoles = sundayHolidayExcludedRoles.filter(r => PAYROLL_ROLES.includes(r));
+    }
+    if (overtimeEligibleRoles !== undefined) {
+      update.overtimeEligibleRoles = overtimeEligibleRoles.filter(r => PAYROLL_ROLES.includes(r));
     }
 
     const policy = await SalaryPolicy.findOneAndUpdate(
