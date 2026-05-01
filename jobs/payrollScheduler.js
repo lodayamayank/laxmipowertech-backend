@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import SalarySlip from '../models/SalarySlip.js';
+import SalaryCache from '../models/SalaryCache.js';
 import { calculateSalaryForPeriod } from '../services/salary.service.js';
 
 // Idempotency key store (in-memory — sufficient for single-instance; use Redis for multi-instance)
@@ -21,7 +22,7 @@ async function generateDraftSlips(year, month, trigger = 'cron') {
   console.log(`[Payroll] ${trigger} — generating draft slips for ${month}/${year}`);
 
   try {
-    const salaryData = await calculateSalaryForPeriod({ month, year });
+    const { data: salaryData } = await calculateSalaryForPeriod({ month, year, page: 1, limit: 10000 });
     if (!salaryData || salaryData.length === 0) {
       console.log(`[Payroll] No salary data for ${month}/${year}`);
       return;
@@ -108,6 +109,13 @@ async function generateDraftSlips(year, month, trigger = 'cron') {
       await SalarySlip.bulkWrite(bulkOps);
     }
 
+    // Refresh salary cache so dashboard reads fresh data next time
+    await SalaryCache.findOneAndUpdate(
+      { month, year },
+      { $set: { employees: salaryData, total: salaryData.length, computedAt: new Date() } },
+      { upsert: true }
+    );
+
     const duration = Date.now() - startedAt;
     console.log(
       `[Payroll] ${trigger} — done: ${bulkOps.length} upserted, ${skipped} skipped (locked/paid) in ${duration}ms`
@@ -143,8 +151,7 @@ async function reconcileOpenSlips(year, month, trigger = 'cron') {
       return;
     }
 
-    const userIds = openSlips.map(s => s.user);
-    const salaryData = await calculateSalaryForPeriod({ month, year });
+    const { data: salaryData } = await calculateSalaryForPeriod({ month, year, page: 1, limit: 10000 });
     const salaryByUser = {};
     salaryData.forEach(s => { salaryByUser[s.userId.toString()] = s; });
 
@@ -186,6 +193,13 @@ async function reconcileOpenSlips(year, month, trigger = 'cron') {
     if (bulkOps.length > 0) {
       await SalarySlip.bulkWrite(bulkOps);
     }
+
+    // Update cache with latest reconciled data
+    await SalaryCache.findOneAndUpdate(
+      { month, year },
+      { $set: { employees: salaryData, total: salaryData.length, computedAt: new Date() } },
+      { upsert: true }
+    );
 
     console.log(`[Payroll] Reconciled ${bulkOps.length} open slips for ${month}/${year}`);
   } catch (err) {

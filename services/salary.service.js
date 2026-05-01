@@ -171,21 +171,26 @@ function computeAttendance({ year, month, userAttendance, userLeaves, isLabour, 
 }
 
 // Main exported function
-export async function calculateSalaryForPeriod({ month, year, role, userId }) {
+export async function calculateSalaryForPeriod({ month, year, role, userId, page = 1, limit = 50 }) {
   const monthNum = parseInt(month);
   const yearNum = parseInt(year);
+  const pageNum = Math.max(1, parseInt(page));
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
 
   // Admins are never on payroll — excluded unconditionally
   const userQuery = { role: { $ne: 'admin' } };
   if (role && role.toLowerCase() !== 'admin') userQuery.role = role.toLowerCase();
   if (userId) userQuery._id = userId;
 
+  const totalCount = await User.countDocuments(userQuery);
   const users = await User.find(userQuery)
     .populate('project', 'name')
     .populate('assignedBranches', 'name')
+    .skip((pageNum - 1) * limitNum)
+    .limit(limitNum)
     .lean();
 
-  if (users.length === 0) return [];
+  if (users.length === 0) return { data: [], total: totalCount, page: pageNum, limit: limitNum, totalPages: Math.ceil(totalCount / limitNum) };
 
   const startDate = new Date(yearNum, monthNum - 1, 1);
   startDate.setHours(0, 0, 0, 0);
@@ -394,5 +399,11 @@ export async function calculateSalaryForPeriod({ month, year, role, userId }) {
     });
   }
 
-  return salaryData;
+  return {
+    data: salaryData,
+    total: totalCount,
+    page: pageNum,
+    limit: limitNum,
+    totalPages: Math.ceil(totalCount / limitNum),
+  };
 }
