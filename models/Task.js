@@ -42,7 +42,7 @@ const taskSchema = new mongoose.Schema({
   },
   photoUrl: {
     type: String,
-    required: true
+    default: ''
   },
   photoPublicId: {
     type: String

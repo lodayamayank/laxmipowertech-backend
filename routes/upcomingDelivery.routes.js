@@ -4,6 +4,7 @@ import SiteTransfer from '../models/SiteTransfer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import Indent from '../models/Indent.js';
 import { syncToSiteTransfer, syncToPurchaseOrder, calculateDeliveryStatus } from '../utils/syncService.js';
+import { validateWorkOrderLimit, getWorkOrderSummary } from '../utils/workOrderValidation.js';
 import protect from '../middleware/authMiddleware.js';
 import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
@@ -598,6 +599,35 @@ const extractBasePOId = (poId) => {
   return poId.replace(/-\d+$/, '');
 };
 
+// GET Work Order summary for a project
+router.get('/work-order-summary/:projectId', protect, async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    
+    if (!projectId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Project ID is required'
+      });
+    }
+    
+    const summary = await getWorkOrderSummary(projectId);
+    
+    res.json({
+      success: true,
+      data: summary,
+      message: 'Work Order summary retrieved successfully'
+    });
+  } catch (err) {
+    console.error('Get WO summary error:', err.message);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get Work Order summary',
+      error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+  }
+});
+
 // UPDATE GRN billing details (Material-wise)
 router.put('/:id/billing', protect, async (req, res) => {
   try {
@@ -705,6 +735,35 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log(`   totalDiscountAmount: ${totalDiscountAmount}`);
     
     const finalAmount = totalPrice - totalDiscountAmount;
+    
+    // ✅ CRITICAL BUSINESS RULE: Validate Work Order Limit (Project-wise)
+    if (delivery.project) {
+      console.log('🔍 Validating Work Order limit for project:', delivery.project);
+      
+      // Get current billing amount (if updating existing billing)
+      const currentBillingAmount = delivery.billing?.finalAmount || 0;
+      
+      // Validate if new amount exceeds WO limit
+      const validation = await validateWorkOrderLimit(
+        delivery.project,
+        finalAmount,
+        delivery._id, // Exclude current delivery from calculation
+        'GRN'
+      );
+      
+      if (!validation.valid) {
+        console.error('❌ Work Order limit exceeded:', validation.message);
+        return res.status(400).json({
+          success: false,
+          message: validation.message,
+          details: validation.details
+        });
+      }
+      
+      console.log('✅ Work Order validation passed:', validation.details);
+    } else {
+      console.warn('⚠️ No project linked to this delivery - WO validation skipped');
+    }
     
     // Update billing information
     delivery.billing = {

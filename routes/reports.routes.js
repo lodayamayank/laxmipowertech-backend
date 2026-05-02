@@ -172,7 +172,6 @@ router.get('/project/:projectId', protect, async (req, res) => {
     // Material (GRN) aggregation
     const deliveries = await UpcomingDelivery.find({
       project: projectId,
-      'billing.finalAmount': { $gt: 0 },
     })
       .sort({ 'billing.billDate': -1, updatedAt: -1 })
       .lean();
@@ -182,6 +181,22 @@ router.get('/project/:projectId', protect, async (req, res) => {
     let totalMaterialDiscount = 0;
     let totalMaterialCost = 0;
     let totalMaterialQuantity = 0;
+    let deliveriesInPeriod = 0;
+
+    const addMaterialTotals = (grossAmount = 0, discountAmount = 0, netAmount = 0, quantity = null) => {
+      if (Number.isFinite(grossAmount)) {
+        totalMaterialPrice += grossAmount;
+      }
+      if (Number.isFinite(discountAmount)) {
+        totalMaterialDiscount += discountAmount;
+      }
+      if (Number.isFinite(netAmount)) {
+        totalMaterialCost += netAmount;
+      }
+      if (quantity !== null && quantity !== undefined && !Number.isNaN(quantity)) {
+        totalMaterialQuantity += quantity;
+      }
+    };
 
     deliveries.forEach((delivery) => {
       const billing = delivery.billing || {};
@@ -192,13 +207,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
         return;
       }
 
-      const totalPrice = billing.totalPrice || 0;
-      const totalDiscount = billing.totalDiscount || 0;
-      const finalAmount = billing.finalAmount || 0;
-
-      totalMaterialPrice += totalPrice;
-      totalMaterialDiscount += totalDiscount;
-      totalMaterialCost += finalAmount;
+      deliveriesInPeriod += 1;
 
       const itemsIndex = new Map();
       (delivery.items || []).forEach((item) => {
@@ -208,49 +217,120 @@ router.get('/project/:projectId', protect, async (req, res) => {
         itemsIndex.set(key, item);
       });
 
-      const materialBilling = billing.materialBilling || [];
+      const materialBilling = Array.isArray(billing.materialBilling) ? billing.materialBilling : [];
 
-      if (materialBilling.length === 0) {
-        materialRows.push({
-          id: `${delivery._id}-summary`,
-          materialName: '-',
-          quantity: null,
-          rate: null,
-          totalAmount: finalAmount,
-          invoiceNumber: billing.invoiceNumber || '-',
-          billDate,
-          transferNumber: delivery.transfer_number || delivery.st_id,
-          companyName: billing.companyName || '',
-          status: delivery.status,
+      if (materialBilling.length > 0) {
+        materialBilling.forEach((material, index) => {
+          const itemRef = material.materialId ? itemsIndex.get(material.materialId.toString()) : null;
+
+          const quantityRaw = material.quantity ?? itemRef?.quantity ?? itemRef?.st_quantity ?? itemRef?.received_quantity;
+          const quantity = quantityRaw !== undefined && quantityRaw !== null ? Number(quantityRaw) : null;
+
+          const grossAmount = Number(material.price ?? material.grossAmount ?? 0) || 0;
+          const discountValue = Number(material.discount ?? 0) || 0;
+          const discountType = material.discountType || 'flat';
+          const discountAmount = discountType === 'percentage' ? (grossAmount * discountValue) / 100 : discountValue;
+
+          let totalAmount = material.totalAmount;
+          if (totalAmount === undefined || totalAmount === null) {
+            totalAmount = Math.max(0, grossAmount - discountAmount);
+          }
+          totalAmount = Number(totalAmount) || 0;
+
+          let ratePerUnit = null;
+          if (quantity && !Number.isNaN(quantity) && quantity !== 0) {
+            ratePerUnit = totalAmount / quantity;
+          } else if (material.rate) {
+            ratePerUnit = Number(material.rate) || null;
+          } else if (itemRef?.rate) {
+            ratePerUnit = Number(itemRef.rate) || null;
+          }
+
+          addMaterialTotals(grossAmount, discountAmount, totalAmount, quantity ?? null);
+
+          materialRows.push({
+            id: `${delivery._id}_${material.materialId || material.materialName || index}`,
+            projectName: project.name,
+            materialName: material.materialName || itemRef?.name || 'Material',
+            quantity: quantity ?? null,
+            rate: ratePerUnit,
+            grossAmount,
+            discount: discountAmount,
+            discountType,
+            totalAmount,
+            invoiceNumber: billing.invoiceNumber || '-',
+            billDate,
+            transferNumber: delivery.transfer_number || delivery.st_id,
+            companyName: billing.companyName || '',
+            status: delivery.status,
+          });
         });
+
         return;
       }
 
-      materialBilling.forEach((material) => {
-        const itemRef = material.materialId ? itemsIndex.get(material.materialId.toString()) : null;
-        const quantity = Number(itemRef?.quantity || itemRef?.st_quantity || 0) || null;
-        const totalAmount = material.totalAmount ?? material.price ?? 0;
-        const ratePerUnit = quantity ? totalAmount / quantity : null;
+      const fallbackItems = Array.isArray(delivery.items) ? delivery.items : [];
 
-        if (quantity) {
-          totalMaterialQuantity += quantity;
-        }
+      if (fallbackItems.length) {
+        fallbackItems.forEach((item, index) => {
+          const quantityRaw = item.quantity ?? item.st_quantity ?? item.received_quantity ?? item.grn_quantity;
+          const quantity = quantityRaw !== undefined && quantityRaw !== null ? Number(quantityRaw) : null;
 
-        materialRows.push({
-          id: `${delivery._id}_${material.materialId || material.materialName || Math.random().toString(36).slice(2)}`,
-          materialName: material.materialName || itemRef?.name || 'Material',
-          quantity,
-          rate: ratePerUnit,
-          grossAmount: material.price ?? 0,
-          discount: material.discount ?? 0,
-          discountType: material.discountType || 'flat',
-          totalAmount,
-          invoiceNumber: billing.invoiceNumber || '-',
-          billDate,
-          transferNumber: delivery.transfer_number || delivery.st_id,
-          companyName: billing.companyName || '',
-          status: delivery.status,
+          const rateCandidate = item.rate ?? item.pricePerUnit ?? item.unitPrice;
+          const rate = rateCandidate !== undefined && rateCandidate !== null ? Number(rateCandidate) : null;
+
+          let grossAmount = Number(item.totalAmount ?? item.total ?? item.amount ?? 0);
+          if ((!grossAmount || Number.isNaN(grossAmount)) && quantity && rate) {
+            grossAmount = quantity * rate;
+          }
+          grossAmount = Number(grossAmount) || 0;
+
+          const totalAmount = grossAmount;
+
+          addMaterialTotals(grossAmount, 0, totalAmount, quantity ?? null);
+
+          materialRows.push({
+            id: `${delivery._id}_fallback_${index}`,
+            projectName: project.name,
+            materialName: item.name || item.materialName || 'Material',
+            quantity: quantity ?? null,
+            rate,
+            grossAmount,
+            discount: 0,
+            discountType: 'flat',
+            totalAmount,
+            invoiceNumber: billing.invoiceNumber || '-',
+            billDate,
+            transferNumber: delivery.transfer_number || delivery.st_id,
+            companyName: billing.companyName || '',
+            status: delivery.status,
+          });
         });
+
+        return;
+      }
+
+      const grossAmount = Number(billing.totalPrice ?? billing.finalAmount ?? 0) || 0;
+      const discountAmount = Number(billing.totalDiscount ?? 0) || 0;
+      const totalAmount = Math.max(0, grossAmount - discountAmount);
+
+      addMaterialTotals(grossAmount, discountAmount, totalAmount);
+
+      materialRows.push({
+        id: `${delivery._id}-summary`,
+        projectName: project.name,
+        materialName: '-',
+        quantity: null,
+        rate: null,
+        grossAmount,
+        discount: discountAmount,
+        discountType: 'flat',
+        totalAmount,
+        invoiceNumber: billing.invoiceNumber || '-',
+        billDate,
+        transferNumber: delivery.transfer_number || delivery.st_id,
+        companyName: billing.companyName || '',
+        status: delivery.status,
       });
     });
 
@@ -346,6 +426,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
     const totalBilling = workOrderReportTotals.totalBilledInPeriod;
     const totalExpenses = totalMaterialCost + totalLabourCost;
     const profitOrLoss = totalBilling - totalExpenses;
+    const outstandingAmount = Math.max((workOrderReportTotals.totalWorkOrderValue || 0) - totalBilling, 0);
 
     const responseData = {
       projectId: project._id,
@@ -363,6 +444,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
       totalMaterialQuantity,
       totalLabourCost,
       totalExpenses,
+      outstandingAmount,
       profitOrLoss,
       finalAmount: profitOrLoss,
       woSummary: {
@@ -370,7 +452,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
         period: { startDate, endDate },
       },
       materialSummary: {
-        deliveriesCount: materialRows.length,
+        deliveriesCount: deliveriesInPeriod,
         totalMaterialPrice,
         totalMaterialDiscount,
         totalMaterialCost,
@@ -386,6 +468,16 @@ router.get('/project/:projectId', protect, async (req, res) => {
       woData: workOrderRows,
       materialData: materialRows,
       labourData: labourRows,
+      summary: {
+        totals: {
+          totalBilling,
+          totalMaterialCost,
+          totalLabourCost,
+          totalExpenses,
+          profitOrLoss,
+          outstandingAmount,
+        },
+      },
     };
 
     res.json({ success: true, data: responseData });

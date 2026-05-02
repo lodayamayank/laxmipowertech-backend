@@ -7,6 +7,83 @@ import { upload, uploadToCloudinary, deleteFromCloudinary } from '../middleware/
 
 const router = express.Router();
 
+// Admin create task (Admin can create for any supervisor)
+router.post('/admin', auth, upload.single('photo'), async (req, res) => {
+  try {
+    // Only admin can create tasks via this endpoint
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Only admins can create tasks via this endpoint' 
+      });
+    }
+
+    const { project, branch, building, wing, floor, flat, room, supervisor, notes } = req.body;
+    
+    // Validate required fields
+    if (!project || !building || !wing || !floor || !flat || !room || !supervisor) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'All hierarchy levels and supervisor are required' 
+      });
+    }
+
+    let photoUrl, photoPublicId;
+    
+    // Photo is optional for admin
+    if (req.file) {
+      const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
+      photoUrl = cloudinaryResult.url;
+      photoPublicId = cloudinaryResult.publicId;
+    }
+    
+    // Parse hierarchy data
+    const buildingData = typeof building === 'string' ? JSON.parse(building) : building;
+    const wingData = typeof wing === 'string' ? JSON.parse(wing) : wing;
+    const floorData = typeof floor === 'string' ? JSON.parse(floor) : floor;
+    const flatData = typeof flat === 'string' ? JSON.parse(flat) : flat;
+    const roomData = typeof room === 'string' ? JSON.parse(room) : room;
+
+    // Create task
+    const task = new Task({
+      project,
+      branch: branch || null,
+      building: buildingData,
+      wing: wingData,
+      floor: floorData,
+      flat: flatData,
+      room: roomData,
+      supervisor, // Admin specifies the supervisor
+      photoUrl: photoUrl || '',
+      photoPublicId: photoPublicId || '',
+      notes: notes || '',
+      status: 'pending'
+    });
+
+    await task.save();
+
+    // Populate before sending response
+    await task.populate('supervisor', 'name email role');
+    await task.populate('project', 'name address');
+    if (task.branch) {
+      await task.populate('branch', 'name address');
+    }
+
+    res.status(201).json({
+      success: true,
+      message: 'Task created successfully',
+      data: task
+    });
+  } catch (err) {
+    console.error('Error creating task (admin):', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to create task', 
+      error: err.message 
+    });
+  }
+});
+
 // Create new task (Supervisor only)
 router.post('/', auth, upload.single('photo'), async (req, res) => {
   try {
@@ -290,6 +367,89 @@ router.patch('/:id/status', auth, async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Failed to update task status', 
+      error: err.message 
+    });
+  }
+});
+
+// Update task (Admin only - full update)
+router.put('/:id', auth, upload.single('photo'), async (req, res) => {
+  try {
+    // Only admin can update tasks
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ 
+        success: false,
+        message: 'Only admins can update tasks' 
+      });
+    }
+
+    const task = await Task.findById(req.params.id);
+
+    if (!task) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'Task not found' 
+      });
+    }
+
+    const { project, branch, building, wing, floor, flat, room, supervisor, notes, status } = req.body;
+    
+    // Update fields if provided
+    if (project) task.project = project;
+    if (branch !== undefined) task.branch = branch || null;
+    if (supervisor) task.supervisor = supervisor;
+    if (notes !== undefined) task.notes = notes;
+    if (status) task.status = status;
+    
+    // Update hierarchy if provided
+    if (building) {
+      task.building = typeof building === 'string' ? JSON.parse(building) : building;
+    }
+    if (wing) {
+      task.wing = typeof wing === 'string' ? JSON.parse(wing) : wing;
+    }
+    if (floor) {
+      task.floor = typeof floor === 'string' ? JSON.parse(floor) : floor;
+    }
+    if (flat) {
+      task.flat = typeof flat === 'string' ? JSON.parse(flat) : flat;
+    }
+    if (room) {
+      task.room = typeof room === 'string' ? JSON.parse(room) : room;
+    }
+
+    // Update photo if new one provided
+    if (req.file) {
+      // Delete old photo from Cloudinary
+      if (task.photoPublicId) {
+        await deleteFromCloudinary(task.photoPublicId);
+      }
+      
+      // Upload new photo
+      const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
+      task.photoUrl = cloudinaryResult.url;
+      task.photoPublicId = cloudinaryResult.publicId;
+    }
+
+    await task.save();
+
+    // Populate before sending response
+    await task.populate('supervisor', 'name email role');
+    await task.populate('project', 'name address');
+    if (task.branch) {
+      await task.populate('branch', 'name address');
+    }
+
+    res.json({
+      success: true,
+      message: 'Task updated successfully',
+      data: task
+    });
+  } catch (err) {
+    console.error('Error updating task:', err);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to update task', 
       error: err.message 
     });
   }

@@ -14,6 +14,11 @@ const PurchaseOrderSchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
+  // Project reference for Work Order limit validation
+  project: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Project'
+  },
   requestDate: { 
     type: Date, 
     default: Date.now 
