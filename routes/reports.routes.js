@@ -203,7 +203,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
       const billDate = billing.billDate ? new Date(billing.billDate) : null;
       const referenceDate = billDate || delivery.updatedAt || delivery.createdAt;
 
-      if (referenceDate < startDate || referenceDate > endDate) {
+      if (!referenceDate || referenceDate < startDate || referenceDate > endDate) {
         return;
       }
 
@@ -335,11 +335,22 @@ router.get('/project/:projectId', protect, async (req, res) => {
     });
 
     // Labour aggregation
-    const labourUsers = await User.find({
-      project: projectId,
-      role: { $in: LABOUR_ROLES },
-    })
-      .select('name role employeeId ctcAmount salaryType perDayTravelAllowance railwayPassAmount')
+    const projectBranchIds = (project.branches || []).map(b =>
+      typeof b === 'object' && b._id ? b._id : b
+    );
+
+    const labourQuery = { role: { $in: LABOUR_ROLES } };
+    if (projectBranchIds.length > 0) {
+      labourQuery.$or = [
+        { project: projectId },
+        { assignedBranches: { $in: projectBranchIds } },
+      ];
+    } else {
+      labourQuery.project = projectId;
+    }
+
+    const labourUsers = await User.find(labourQuery)
+      .select('name role employeeId ctcAmount salaryType perDayTravelAllowance railwayPassAmount assignedBranches project')
       .lean();
 
     let labourRows = [];
@@ -384,7 +395,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
             deductions: slip.deductions?.total || 0,
             reimbursements: slip.reimbursements?.total || 0,
             travelAllowance: slip.travel?.total || 0,
-            overtimePay: slip.overtime?.pay || 0,
+            overtimePay: slip.overtime?.total || 0,
             presentDays: attendance.presentDays ?? null,
             payableDays: slip.payableDays ?? null,
             dataSource: 'salarySlip',
@@ -426,7 +437,7 @@ router.get('/project/:projectId', protect, async (req, res) => {
     const totalBilling = workOrderReportTotals.totalBilledInPeriod;
     const totalExpenses = totalMaterialCost + totalLabourCost;
     const profitOrLoss = totalBilling - totalExpenses;
-    const outstandingAmount = Math.max((workOrderReportTotals.totalWorkOrderValue || 0) - totalBilling, 0);
+    const outstandingAmount = workOrderReportTotals.outstandingLifetime || 0;
 
     const responseData = {
       projectId: project._id,
