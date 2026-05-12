@@ -8,32 +8,29 @@ import auth from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-// Setup multer for receipt uploads
+// Setup multer for receipt uploads — Multer 2 async return style
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: async (req, file) => {
     const uploadPath = "./uploads/reimbursements";
     if (!fs.existsSync(uploadPath)) {
       fs.mkdirSync(uploadPath, { recursive: true });
     }
-    cb(null, uploadPath);
+    return uploadPath;
   },
-  filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
+  filename: async (req, file) => {
+    return `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
   },
 });
 
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
-  fileFilter: (req, file, cb) => {
+  fileFilter: async (req, file) => {
     const allowedTypes = /jpeg|jpg|png|pdf/;
     const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
     const mimetype = allowedTypes.test(file.mimetype);
-    if (mimetype && extname) {
-      return cb(null, true);
-    }
-    cb(new Error("Only images (jpeg, jpg, png) and PDF files are allowed"));
+    if (mimetype && extname) return true;
+    throw new Error("Only images (jpeg, jpg, png) and PDF files are allowed");
   },
 });
 
