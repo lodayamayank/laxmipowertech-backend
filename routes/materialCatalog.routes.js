@@ -14,13 +14,13 @@ const __dirname = path.dirname(__filename);
 const upload = multer({
   dest: path.join(__dirname, '..', 'tmp_uploads'),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
-  fileFilter: async (req, file) => {
+  fileFilter: (req, file, cb) => {
     const allowedTypes = [
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel'
     ];
-    if (allowedTypes.includes(file.mimetype)) return true;
-    throw new Error('Only Excel files are allowed');
+    if (allowedTypes.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Only Excel files are allowed'));
   }
 });
 

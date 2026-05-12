@@ -99,7 +99,6 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
   'http://127.0.0.1:5173',
   'https://laxmipowertech-frontend.onrender.com',
   'https://laxmipower-tech.vercel.app',
-  'https://laxmipowertech-frontend.vercel.app',
 ];
 
 app.use(
@@ -167,15 +166,5 @@ async function start() {
     process.exit(1);
   }
 }
-
-// Global error handler — catches errors from middleware (e.g. Multer, auth) and async routes
-app.use((err, req, res, _next) => {
-  console.error('❌ Unhandled error:', err.message);
-  const status = err.status || err.statusCode || 500;
-  res.status(status).json({
-    success: false,
-    message: err.message || 'Internal server error',
-  });
-});
 
 start();

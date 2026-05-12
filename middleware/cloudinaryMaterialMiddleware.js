@@ -4,28 +4,31 @@ import fs from 'fs';
 import cloudinary from '../config/cloudinary.js';
 
 // Configure multer for temporary storage
-// NOTE: Multer 2 requires async functions that return values — NOT the old cb(null, val) style
 const storage = multer.diskStorage({
-  destination: async (req, file) => {
+  destination: (req, file, cb) => {
     const tmpDir = 'tmp_uploads';
     if (!fs.existsSync(tmpDir)) {
       fs.mkdirSync(tmpDir, { recursive: true });
     }
-    return tmpDir;
+    cb(null, tmpDir);
   },
-  filename: async (req, file) => {
+  filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    return 'material-' + uniqueSuffix + path.extname(file.originalname);
-  },
+    cb(null, 'material-' + uniqueSuffix + path.extname(file.originalname));
+  }
 });
 
-// File filter for images — Multer 2: return true to accept, return false or throw to reject
-const fileFilter = async (req, file) => {
+// File filter for images
+const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
-  if (mimetype && extname) return true;
-  throw new Error('Only image files are allowed!');
+  
+  if (mimetype && extname) {
+    return cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed!'));
+  }
 };
 
 // Multer upload configuration

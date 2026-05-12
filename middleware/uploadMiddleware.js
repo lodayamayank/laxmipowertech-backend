@@ -8,19 +8,21 @@ if (!fs.existsSync(uploadPath)) {
   fs.mkdirSync(uploadPath);
 }
 
-// Multer 2 storage config — async return style
+// Multer storage config
 const storage = multer.diskStorage({
-  destination: async (req, file) => 'uploads/',
-  filename: async (req, file) => {
+  destination(req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename(req, file, cb) {
     const ext = path.extname(file.originalname);
-    return `selfie-${Date.now()}${ext}`;
+    cb(null, `selfie-${Date.now()}${ext}`);
   },
 });
 
-// Accept only image files — Multer 2 async fileFilter
-const fileFilter = async (req, file) => {
-  if (file.mimetype.startsWith('image/')) return true;
-  throw new Error('Only image files are allowed!');
+// Accept only image files
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith('image/')) cb(null, true);
+  else cb(new Error('Only image files are allowed!'), false);
 };
 
 const upload = multer({ storage, fileFilter });
