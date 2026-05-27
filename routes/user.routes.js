@@ -60,7 +60,16 @@ router.post('/register', authMiddleware, async (req, res) => {
 
     res.status(201).json(populatedUser);
   } catch (err) {
-    res.status(400).json({ message: 'Failed to register user', error: err.message });
+    console.error('❌ Failed to register user:', err);
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyValue)[0];
+      const value = err.keyValue[field];
+      return res.status(400).json({ 
+        message: `Failed to register user: The ${field} '${value}' is already in use. Please use a different ${field}.`, 
+        error: err.message 
+      });
+    }
+    res.status(400).json({ message: `Failed to register user: ${err.message}`, error: err.message });
   }
 });
 
