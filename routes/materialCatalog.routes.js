@@ -3,12 +3,46 @@ import MaterialCatalog from '../models/MaterialCatalog.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import { fileURLToPath } from 'url';
 
 const router = express.Router();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const readWorkbookSheets = async (filePath) => {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+
+  const sheets = {};
+  workbook.eachSheet((worksheet) => {
+    const headers = [];
+    const rows = [];
+
+    worksheet.eachRow((row, rowNumber) => {
+      const values = row.values.slice(1);
+
+      if (rowNumber === 1) {
+        values.forEach((value, index) => {
+          headers[index] = value === undefined || value === null ? '' : String(value).trim();
+        });
+        return;
+      }
+
+      const parsedRow = {};
+      values.forEach((value, index) => {
+        const header = headers[index] || `__EMPTY_${index + 1}`;
+        parsedRow[header] = value;
+      });
+
+      if (Object.keys(parsedRow).length) rows.push(parsedRow);
+    });
+
+    sheets[worksheet.name] = rows;
+  });
+
+  return sheets;
+};
 
 // Multer storage for Excel
 const upload = multer({
@@ -16,11 +50,10 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.ms-excel'
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     ];
     if (allowedTypes.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Only Excel files are allowed'));
+    else cb(new Error('Only .xlsx Excel files are allowed'));
   }
 });
 
@@ -36,12 +69,10 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const targetPath = path.join(uploadsDir, `${Date.now()}-${file.originalname}`);
     fs.renameSync(file.path, targetPath);
 
-    const workbook = XLSX.readFile(targetPath);
+    const sheets = await readWorkbookSheets(targetPath);
     const allRows = [];
 
-    workbook.SheetNames.forEach(sheetName => {
-      const ws = workbook.Sheets[sheetName];
-      const rows = XLSX.utils.sheet_to_json(ws);
+    Object.entries(sheets).forEach(([sheetName, rows]) => {
       rows.forEach(row => allRows.push({ ...row, sheetName }));
     });
     
@@ -136,18 +167,13 @@ router.get('/last', async (req, res) => {
     if (!fs.existsSync(uploadsDir)) return res.json({});
 
     const files = fs.readdirSync(uploadsDir)
-      .filter(f => f.endsWith('.xlsx') || f.endsWith('.xls'))
+      .filter(f => f.endsWith('.xlsx'))
       .sort((a, b) => fs.statSync(path.join(uploadsDir, b)).mtimeMs - fs.statSync(path.join(uploadsDir, a)).mtimeMs);
 
     if (!files.length) return res.json({});
 
     const latestFile = path.join(uploadsDir, files[0]);
-    const workbook = XLSX.readFile(latestFile);
-    const allSheets = {};
-    workbook.SheetNames.forEach(sheetName => {
-      const ws = workbook.Sheets[sheetName];
-      allSheets[sheetName] = XLSX.utils.sheet_to_json(ws);
-    });
+    const allSheets = await readWorkbookSheets(latestFile);
 
     res.status(200).json(allSheets);
   } catch (err) {
