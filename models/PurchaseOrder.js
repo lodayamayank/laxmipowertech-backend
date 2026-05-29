@@ -29,6 +29,7 @@ const PurchaseOrderSchema = new mongoose.Schema({
       category: { type: String },
       subCategory: { type: String },
       subCategory1: { type: String },
+      subCategory2: { type: String },
       quantity: { type: Number, required: true },
       uom: { type: String },
       remarks: { type: String },
