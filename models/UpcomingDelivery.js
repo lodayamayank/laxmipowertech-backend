@@ -119,9 +119,8 @@ const UpcomingDeliverySchema = new mongoose.Schema({
   }
 });
 
-UpcomingDeliverySchema.pre('save', function(next) {
+UpcomingDeliverySchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
 UpcomingDeliverySchema.index({ st_id: 1 });

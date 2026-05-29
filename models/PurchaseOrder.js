@@ -59,9 +59,8 @@ const PurchaseOrderSchema = new mongoose.Schema({
   }
 });
 
-PurchaseOrderSchema.pre('save', function(next) {
+PurchaseOrderSchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
 PurchaseOrderSchema.index({ status: 1 });

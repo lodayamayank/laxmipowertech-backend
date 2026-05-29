@@ -52,9 +52,8 @@ const SiteTransferSchema = new mongoose.Schema({
   }
 });
 
-SiteTransferSchema.pre('save', function(next) {
+SiteTransferSchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
 SiteTransferSchema.index({ status: 1 });
