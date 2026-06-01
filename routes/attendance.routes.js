@@ -492,7 +492,7 @@ router.post('/bulk', authMiddleware, async (req, res) => {
     const errors = [];
 
     for (const record of records) {
-      const { user, branch, status, date } = record;
+      const { user, branch, status, date, punchTime } = record;
 
       if (!user || !status || !date) {
         errors.push({ user, message: 'Missing required fields' });
@@ -500,31 +500,53 @@ router.post('/bulk', authMiddleware, async (req, res) => {
       }
 
       try {
-        // Check if attendance already exists for this user on this date
-        const existingAttendance = await Attendance.findOne({
-          user,
-          date: new Date(date)
-        });
+        // in/out records are separate per direction; absent/present/half-day are one record per day
+        const startOfDay = new Date(date + 'T00:00:00.000Z');
+        const endOfDay   = new Date(date + 'T23:59:59.999Z');
+        const dateRange  = { $gte: startOfDay, $lte: endOfDay };
 
-        if (existingAttendance) {
-          // Update existing attendance
-          existingAttendance.punchType = status; // 'present', 'absent', 'half-day'
-          existingAttendance.updatedAt = new Date();
-          await existingAttendance.save();
-          results.push(existingAttendance);
+        // Guard: punch-out requires an existing punch-in on the same day
+        if (status === 'out') {
+          const hasIn = await Attendance.findOne({ user, date: dateRange, punchType: 'in' }).lean();
+          if (!hasIn) {
+            errors.push({ user, message: 'Cannot punch out without a punch in record for this date' });
+            continue;
+          }
+          // Also validate punch-out time is after punch-in time
+          if (punchTime && hasIn) {
+            const inTime  = new Date(hasIn.punchTime || hasIn.createdAt);
+            const outTime = new Date(punchTime);
+            if (outTime <= inTime) {
+              errors.push({ user, message: 'Punch out time must be after punch in time' });
+              continue;
+            }
+          }
+        }
+
+        const isPunchDirection = status === 'in' || status === 'out';
+        const query = isPunchDirection
+          ? { user, date: dateRange, punchType: status }
+          : { user, date: dateRange, punchType: { $in: ['absent', 'present', 'half-day', 'half'] } };
+
+        const existing = await Attendance.findOne(query);
+        const resolvedPunchTime = punchTime ? new Date(punchTime) : undefined;
+
+        if (existing) {
+          existing.punchType = status;
+          if (resolvedPunchTime) existing.punchTime = resolvedPunchTime;
+          if (branch) existing.branch = branch;
+          await existing.save();
+          results.push(existing);
         } else {
-          // Create new attendance record
           const attendance = new Attendance({
             user,
             branch,
             punchType: status,
             date: new Date(date),
-            lat: 0, // Labour attendance doesn't require location
+            ...(resolvedPunchTime && { punchTime: resolvedPunchTime }),
+            lat: 0,
             lng: 0,
-            location: 'Marked by Supervisor',
             selfieUrl: null,
-            createdAt: new Date(),
-            updatedAt: new Date()
           });
           await attendance.save();
           results.push(attendance);
@@ -563,8 +585,12 @@ router.get('/by-date', authMiddleware, async (req, res) => {
       return res.status(400).json({ message: 'Date is required' });
     }
 
+    // Use a full-day UTC range so records stored at any time within the day are matched
+    const startOfDay = new Date(date + 'T00:00:00.000Z');
+    const endOfDay   = new Date(date + 'T23:59:59.999Z');
+
     const query = {
-      date: new Date(date)
+      date: { $gte: startOfDay, $lte: endOfDay },
     };
 
     if (branch) {
