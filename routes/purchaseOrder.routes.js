@@ -98,6 +98,7 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
         category: mat.category || '',
         sub_category: mat.subCategory || '',
         sub_category1: mat.subCategory1 || '',
+        sub_category2: mat.subCategory2 || '',
         st_quantity: mat.quantity || 0,
         received_quantity: mat.received_quantity || 0,
         is_received: mat.is_received || false
@@ -497,6 +498,7 @@ router.put('/:id/approve', async (req, res) => {
           category: mat.category || '',
           sub_category: mat.subCategory || '',  // ✅ Add for admin detail view
           sub_category1: mat.subCategory1 || '',  // ✅ Add for admin detail view
+          sub_category2: mat.subCategory2 || '',  // ✅ Add subCategory2
           quantity: mat.quantity,
           st_quantity: mat.quantity,  // ✅ Required for "Requested" column in admin
           uom: mat.uom || 'pcs',  // Default to 'pcs' if not specified

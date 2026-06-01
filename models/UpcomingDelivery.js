@@ -61,6 +61,7 @@ const UpcomingDeliverySchema = new mongoose.Schema({
       category: { type: String },
       sub_category: { type: String },
       sub_category1: { type: String },
+      sub_category2: { type: String },
       st_quantity: { type: Number },  // For Site Transfers
       quantity: { type: Number },  // For PO/Indent
       uom: { type: String },  // For PO/Indent
@@ -118,9 +119,8 @@ const UpcomingDeliverySchema = new mongoose.Schema({
   }
 });
 
-UpcomingDeliverySchema.pre('save', function(next) {
+UpcomingDeliverySchema.pre('save', function() {
   this.updatedAt = Date.now();
-  next();
 });
 
 UpcomingDeliverySchema.index({ st_id: 1 });
