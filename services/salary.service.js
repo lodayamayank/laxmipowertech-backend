@@ -128,8 +128,8 @@ function computeAttendance({ year, month, userAttendance, userLeaves, isLabour, 
     if (punchIns.length === 0 && punchOuts.length === 0) {
       absentDays++;
     } else if (punchIns.length > 0 && punchOuts.length > 0) {
-      const firstIn = new Date(punchIns[0].createdAt);
-      const lastOut = new Date(punchOuts[punchOuts.length - 1].createdAt);
+      const firstIn = new Date(punchIns[0].punchTime || punchIns[0].createdAt);
+      const lastOut = new Date(punchOuts[punchOuts.length - 1].punchTime || punchOuts[punchOuts.length - 1].createdAt);
       const durationMinutes = (lastOut - firstIn) / (1000 * 60);
       const durationHours = durationMinutes / 60;
 

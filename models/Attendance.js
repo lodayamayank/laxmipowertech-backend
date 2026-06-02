@@ -13,6 +13,8 @@ const attendanceSchema = new mongoose.Schema(
         "in",
         "out",
         "half",
+        "half-day",
+        "present",
         "absent",
         "weekoff",
         "paidleave",
@@ -24,6 +26,10 @@ const attendanceSchema = new mongoose.Schema(
     lat: String,
     lng: String,
     selfieUrl: String,
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
+
+    // Supervisor-set punch time (overrides createdAt for salary calculation)
+    punchTime: { type: Date },
 
     // 🔹 For leave integration
     date: { type: Date, required: true },
