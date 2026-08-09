@@ -30,8 +30,14 @@ const ReimbursementSchema = new mongoose.Schema({
   rejectionReason: { type: String },
   paymentDate: { type: Date },
   paymentMethod: { type: String, enum: ["cash", "bank", "upi"], default: "bank" },
+
+  // Offline sync: UUID minted on the device so a replayed request is
+  // recognised instead of inserted twice.
+  clientId: { type: String },
+  syncedOffline: { type: Boolean, default: false },
 }, { timestamps: true });
 
 ReimbursementSchema.index({ user: 1, status: 1, submittedAt: 1 });
+ReimbursementSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("Reimbursement", ReimbursementSchema);

@@ -10,8 +10,24 @@ import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
 import AttendanceNote from '../models/AttendanceNote.js';
+import {
+  resolveCapturedAt,
+  findExistingByClientId,
+  isDuplicateClientIdError,
+  readClientId,
+} from '../utils/offlineSync.js';
 
 const router = express.Router();
+
+// Drop a multer temp file we are not going to use (early return / error path).
+const discardUpload = (file) => {
+  if (!file?.path) return;
+  try {
+    fs.unlinkSync(file.path);
+  } catch {
+    /* already gone – nothing to clean up */
+  }
+};
 
 // ✅ PUNCH IN/OUT
 router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) => {
@@ -23,14 +39,31 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
     console.log("REQ USER:", req.user);
 
     if (!['in', 'out'].includes(punchType)) {
+      discardUpload(req.file);
       return res.status(400).json({ message: 'Invalid or missing punch type' });
     }
     if (!lat || !lng) {
+      discardUpload(req.file);
       return res.status(400).json({ message: 'Location is required' });
     }
     if (!req.file) {
       return res.status(400).json({ message: 'Selfie is required' });
     }
+
+    // Offline replay: if this exact punch already landed, return it instead of
+    // recording a second one. Checked before the Cloudinary upload so a retry
+    // does not re-upload the selfie.
+    const clientId = readClientId(req.body);
+    const existing = await findExistingByClientId(Attendance, clientId);
+    if (existing) {
+      discardUpload(req.file);
+      console.log(`↩️  Duplicate punch replay for clientId=${clientId}, returning original`);
+      return res.status(200).json({ message: 'Punch already recorded', attendance: existing, duplicate: true });
+    }
+
+    // An offline punch carries the time it was taken on the device; a live
+    // punch has no capturedAt and falls back to the server clock.
+    const { date: punchedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
 
     // ✅ Reverse geocode
     let location = `Lat: ${lat}, Lng: ${lng}`;
@@ -57,6 +90,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       fs.unlinkSync(req.file.path); // clean up
     } catch (uploadErr) {
       console.error("Cloudinary upload failed:", uploadErr);
+      discardUpload(req.file);
       return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
     }
 
@@ -69,12 +103,22 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
         lng: Number(lng),
         location,
         selfieUrl,
-        date: new Date(), // if schema requires
+        date: punchedAt,
+        ...(clientId ? { clientId } : {}),
+        syncedOffline: backdated,
       });
 
       await attendance.save();
       return res.status(201).json({ message: "Punch recorded", attendance });
     } catch (saveErr) {
+      // Two replays raced: the loser hit the unique clientId index. The punch
+      // exists, so this is a success from the client's point of view.
+      if (isDuplicateClientIdError(saveErr)) {
+        const winner = await findExistingByClientId(Attendance, clientId);
+        if (winner) {
+          return res.status(200).json({ message: 'Punch already recorded', attendance: winner, duplicate: true });
+        }
+      }
       console.error("DB save failed:", saveErr);
       return res.status(500).json({ error: "Failed to save attendance", details: saveErr.message });
     }

@@ -4,6 +4,12 @@ import Task from '../models/Task.js';
 import Project from '../models/Project.js';
 import { filterByUserBranches } from '../middleware/branchAuthMiddleware.js';
 import { upload, uploadToCloudinary, deleteFromCloudinary } from '../middleware/cloudinaryMaterialMiddleware.js';
+import {
+  resolveCapturedAt,
+  findExistingByClientId,
+  isDuplicateClientIdError,
+  readClientId,
+} from '../utils/offlineSync.js';
 
 const router = express.Router();
 
@@ -99,15 +105,31 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
 
     // Validate photo upload
     if (!req.file) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'Photo is required' 
+        message: 'Photo is required'
       });
     }
 
+    // Offline replay: if this submission already landed, return it rather than
+    // creating a second task. Checked before the upload so a retry does not
+    // push the same photo to Cloudinary twice.
+    const clientId = readClientId(req.body);
+    const existing = await findExistingByClientId(Task, clientId);
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        message: 'Task already submitted',
+        data: existing,
+        duplicate: true
+      });
+    }
+
+    const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
+
     // Upload photo to Cloudinary
     const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
-    
+
     // Parse building, wing, floor, flat, room from JSON strings if needed
     const buildingData = typeof building === 'string' ? JSON.parse(building) : building;
     const wingData = typeof wing === 'string' ? JSON.parse(wing) : wing;
@@ -128,10 +150,30 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
       photoUrl: cloudinaryResult.url,
       photoPublicId: cloudinaryResult.publicId,
       notes: notes || '',
-      status: 'pending'
+      status: 'pending',
+      ...(clientId ? { clientId } : {}),
+      capturedAt,
+      syncedOffline: backdated
     });
 
-    await task.save();
+    try {
+      await task.save();
+    } catch (saveErr) {
+      // Two replays raced; the loser hit the unique clientId index. The task
+      // exists, so report success with the winner.
+      if (isDuplicateClientIdError(saveErr)) {
+        const winner = await findExistingByClientId(Task, clientId);
+        if (winner) {
+          return res.status(200).json({
+            success: true,
+            message: 'Task already submitted',
+            data: winner,
+            duplicate: true
+          });
+        }
+      }
+      throw saveErr;
+    }
 
     // Populate before sending response
     await task.populate('supervisor', 'name email role');
