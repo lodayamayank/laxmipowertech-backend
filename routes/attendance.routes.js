@@ -19,6 +19,40 @@ import {
 
 const router = express.Router();
 
+// Admin must type this exact phrase to confirm a bulk delete. Kept in sync
+// with the matching literal in AdminDeleteAttendance.jsx on the frontend.
+const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
+
+// Cloudinary secure_urls look like
+// https://res.cloudinary.com/<cloud>/image/upload/v169.../laxmipowertech/selfies/<id>.jpg
+// The public_id (needed to delete the asset) is the folder+filename with the
+// version segment and extension stripped off.
+const extractCloudinaryPublicId = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const match = url.match(/\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/);
+  return match ? match[1] : null;
+};
+
+// Resolve a startDate/endDate query pair into a [00:00:00, 23:59:59] range.
+// A missing endDate collapses the range onto startDate alone (single-day delete).
+const resolveDeleteRange = (startDate, endDate) => {
+  if (!startDate || isNaN(new Date(startDate))) {
+    return { error: 'A valid startDate is required' };
+  }
+
+  const rangeStart = new Date(startDate);
+  rangeStart.setHours(0, 0, 0, 0);
+
+  const rangeEnd = endDate && !isNaN(new Date(endDate)) ? new Date(endDate) : new Date(startDate);
+  rangeEnd.setHours(23, 59, 59, 999);
+
+  if (rangeEnd < rangeStart) {
+    return { error: 'endDate cannot be before startDate' };
+  }
+
+  return { rangeStart, rangeEnd };
+};
+
 // Drop a multer temp file we are not going to use (early return / error path).
 const discardUpload = (file) => {
   if (!file?.path) return;
@@ -658,5 +692,147 @@ router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
 });
 
 
+// ✅ GET: Preview how many attendance records a date/date-range delete would affect
+// (Admin) — used to populate the confirmation screen before a bulk delete.
+router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
+    }
+
+    const { startDate, endDate } = req.query;
+    const range = resolveDeleteRange(startDate, endDate);
+    if (range.error) {
+      return res.status(400).json({ message: range.error });
+    }
+    const { rangeStart, rangeEnd } = range;
+
+    const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
+    const count = await Attendance.countDocuments(query);
+    const withSelfies = await Attendance.countDocuments({
+      ...query,
+      selfieUrl: { $nin: [null, ''] },
+    });
+
+    res.json({
+      count,
+      withSelfies,
+      startDate: rangeStart.toISOString(),
+      endDate: rangeEnd.toISOString(),
+    });
+  } catch (err) {
+    console.error('Delete preview error:', err);
+    res.status(500).json({ message: 'Failed to preview attendance records', error: err.message });
+  }
+});
+
+// ✅ DELETE: Bulk-delete attendance records and/or their Cloudinary selfies for
+// a date/date-range (Admin only). The admin picks a target — database, Cloudinary,
+// or both — via deleteFromDatabase / deleteFromCloudinary. Requires the admin to
+// have typed the exact confirmation phrase, checked again here in case this is
+// called directly.
+router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
+    }
+
+    const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary } = req.body;
+
+    if (confirmationPhrase !== DELETE_CONFIRMATION_PHRASE) {
+      return res.status(400).json({
+        message: `Confirmation phrase does not match. Type "${DELETE_CONFIRMATION_PHRASE}" to proceed.`,
+      });
+    }
+
+    if (!deleteFromDatabase && !deleteFromCloudinary) {
+      return res.status(400).json({ message: 'Select at least one target: database or Cloudinary' });
+    }
+
+    const range = resolveDeleteRange(startDate, endDate);
+    if (range.error) {
+      return res.status(400).json({ message: range.error });
+    }
+    const { rangeStart, rangeEnd } = range;
+
+    const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
+    const records = await Attendance.find(query).select('selfieUrl').lean();
+
+    if (!records.length) {
+      return res.status(404).json({ message: 'No attendance records found in the selected period' });
+    }
+
+    let cloudinaryDeleted = 0;
+    let cloudinaryFailed = 0;
+
+    if (deleteFromCloudinary) {
+      // Map public_id back to its record so a Cloudinary-only delete can clear
+      // the now-dangling selfieUrl without touching the rest of the document.
+      const publicIdToRecordId = new Map();
+      records.forEach((r) => {
+        const publicId = extractCloudinaryPublicId(r.selfieUrl);
+        if (publicId) publicIdToRecordId.set(publicId, r._id);
+      });
+      const publicIds = [...publicIdToRecordId.keys()];
+      const deletedRecordIds = [];
+
+      // Batched at 100 (the admin delete_resources limit) — a Cloudinary hiccup
+      // should not block the rest of the request.
+      for (let i = 0; i < publicIds.length; i += 100) {
+        const batch = publicIds.slice(i, i + 100);
+        try {
+          const result = await cloudinary.api.delete_resources(batch);
+          batch.forEach((publicId) => {
+            if (result.deleted?.[publicId] === 'deleted') {
+              cloudinaryDeleted += 1;
+              deletedRecordIds.push(publicIdToRecordId.get(publicId));
+            } else {
+              cloudinaryFailed += 1;
+            }
+          });
+        } catch (cloudErr) {
+          console.error('Cloudinary batch delete failed:', cloudErr.message);
+          cloudinaryFailed += batch.length;
+        }
+      }
+
+      // Only clear selfieUrl when the DB record itself is being kept — if it's
+      // about to be deleted wholesale below, there's nothing to clean up here.
+      if (!deleteFromDatabase && deletedRecordIds.length) {
+        await Attendance.updateMany(
+          { _id: { $in: deletedRecordIds } },
+          { $set: { selfieUrl: null } }
+        );
+      }
+    }
+
+    let deletedCount = 0;
+    if (deleteFromDatabase) {
+      const deleteResult = await Attendance.deleteMany(query);
+      deletedCount = deleteResult.deletedCount;
+    }
+
+    console.log(
+      `🗑️  Admin ${req.user.email || req.user.id} bulk-deleted attendance for ` +
+        `${rangeStart.toISOString()} to ${rangeEnd.toISOString()} ` +
+        `(database=${!!deleteFromDatabase}, cloudinary=${!!deleteFromCloudinary}, ` +
+        `deletedCount=${deletedCount}, cloudinaryDeleted=${cloudinaryDeleted})`
+    );
+
+    res.json({
+      message: 'Attendance records processed successfully',
+      deletedCount,
+      cloudinaryDeleted,
+      cloudinaryFailed,
+      deleteFromDatabase: !!deleteFromDatabase,
+      deleteFromCloudinary: !!deleteFromCloudinary,
+      startDate: rangeStart.toISOString(),
+      endDate: rangeEnd.toISOString(),
+    });
+  } catch (err) {
+    console.error('Bulk delete attendance error:', err);
+    res.status(500).json({ message: 'Failed to delete attendance records', error: err.message });
+  }
+});
 
 export default router;
