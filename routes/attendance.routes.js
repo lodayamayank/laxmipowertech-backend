@@ -119,6 +119,12 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       const result = await cloudinary.uploader.upload(req.file.path, {
         folder: "laxmipowertech/selfies",
         public_id: `${req.user.id}_${Date.now()}`,
+        // Cloudinary's perceptual-quality algorithm re-encodes the image at
+        // the smallest size that looks the same as the original — this runs
+        // once at upload time, so the stored file (and secure_url) is already
+        // the compressed version. "auto:good" biases toward preserving
+        // quality over squeezing out the last few KB.
+        quality: "auto:good",
       });
       selfieUrl = result.secure_url;
       fs.unlinkSync(req.file.path); // clean up
