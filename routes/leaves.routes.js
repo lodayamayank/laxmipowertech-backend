@@ -3,17 +3,48 @@ import express from "express";
 import Leave from "../models/Leave.js";
 import auth from "../middleware/authMiddleware.js";
 import Attendance from "../models/Attendance.js";
+import {
+  resolveCapturedAt,
+  findExistingByClientId,
+  isDuplicateClientIdError,
+  readClientId,
+} from "../utils/offlineSync.js";
 
 const router = express.Router();
 
 // ✅ Request leave
 router.post("/", auth, async (req, res) => {
   try {
+    // Offline replay: return the original request instead of filing a second one.
+    const clientId = readClientId(req.body);
+    const existing = await findExistingByClientId(Leave, clientId);
+    if (existing) {
+      return res.status(200).json({ ...existing.toObject(), duplicate: true });
+    }
+
+    const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
+    // clientId/capturedAt are transport concerns – don't let them spread into
+    // the document twice via ...req.body.
+    const { clientId: _cid, capturedAt: _cap, ...leaveFields } = req.body;
+
     const leave = new Leave({
-      ...req.body,
+      ...leaveFields,
       user: req.user.id,
+      ...(clientId ? { clientId } : {}),
+      capturedAt,
+      syncedOffline: backdated,
     });
-    await leave.save();
+
+    try {
+      await leave.save();
+    } catch (saveErr) {
+      if (isDuplicateClientIdError(saveErr)) {
+        const winner = await findExistingByClientId(Leave, clientId);
+        if (winner) return res.status(200).json({ ...winner.toObject(), duplicate: true });
+      }
+      throw saveErr;
+    }
+
     res.status(201).json(leave);
   } catch (err) {
     res.status(400).json({ message: "Failed to request leave", error: err.message });

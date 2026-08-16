@@ -55,7 +55,15 @@ const taskSchema = new mongoose.Schema({
     type: String,
     enum: ['pending', 'in-progress', 'completed', 'verified', 'approved', 'rejected'],
     default: 'pending'
-  }
+  },
+
+  // Offline sync: UUID minted on the device so a replayed submission is
+  // recognised instead of inserted twice. Absent on normal online submissions.
+  clientId: { type: String },
+  // When the supervisor actually captured this on site (may predate createdAt
+  // by hours if it was submitted offline).
+  capturedAt: { type: Date },
+  syncedOffline: { type: Boolean, default: false }
 }, { timestamps: true });
 
 // Indexes for efficient querying and filtering
@@ -66,5 +74,6 @@ taskSchema.index({ 'wing.name': 1 });
 taskSchema.index({ 'floor.name': 1 });
 taskSchema.index({ 'flat.name': 1 });
 taskSchema.index({ 'room.name': 1 });
+taskSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model('Task', taskSchema);

@@ -13,6 +13,8 @@ const attendanceSchema = new mongoose.Schema(
         "in",
         "out",
         "half",
+        "half-day",
+        "present",
         "absent",
         "weekoff",
         "paidleave",
@@ -24,14 +26,25 @@ const attendanceSchema = new mongoose.Schema(
     lat: String,
     lng: String,
     selfieUrl: String,
+    branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
+
+    // Supervisor-set punch time (overrides createdAt for salary calculation)
+    punchTime: { type: Date },
 
     // 🔹 For leave integration
     date: { type: Date, required: true },
     leaveId: { type: mongoose.Schema.Types.ObjectId, ref: "Leave" },
+
+    // 🔹 Offline sync: UUID minted on the device so a replayed punch is
+    // recognised instead of inserted twice. Absent on normal online punches.
+    clientId: { type: String },
+    // True when `date` came from the device rather than the server clock.
+    syncedOffline: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
 
 attendanceSchema.index({ user: 1, date: 1 });
+attendanceSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("Attendance", attendanceSchema);

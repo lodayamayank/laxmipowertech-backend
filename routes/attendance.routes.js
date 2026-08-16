@@ -10,8 +10,58 @@ import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
 import AttendanceNote from '../models/AttendanceNote.js';
+import {
+  resolveCapturedAt,
+  findExistingByClientId,
+  isDuplicateClientIdError,
+  readClientId,
+} from '../utils/offlineSync.js';
 
 const router = express.Router();
+
+// Admin must type this exact phrase to confirm a bulk delete. Kept in sync
+// with the matching literal in AdminDeleteAttendance.jsx on the frontend.
+const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
+
+// Cloudinary secure_urls look like
+// https://res.cloudinary.com/<cloud>/image/upload/v169.../laxmipowertech/selfies/<id>.jpg
+// The public_id (needed to delete the asset) is the folder+filename with the
+// version segment and extension stripped off.
+const extractCloudinaryPublicId = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  const match = url.match(/\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/);
+  return match ? match[1] : null;
+};
+
+// Resolve a startDate/endDate query pair into a [00:00:00, 23:59:59] range.
+// A missing endDate collapses the range onto startDate alone (single-day delete).
+const resolveDeleteRange = (startDate, endDate) => {
+  if (!startDate || isNaN(new Date(startDate))) {
+    return { error: 'A valid startDate is required' };
+  }
+
+  const rangeStart = new Date(startDate);
+  rangeStart.setHours(0, 0, 0, 0);
+
+  const rangeEnd = endDate && !isNaN(new Date(endDate)) ? new Date(endDate) : new Date(startDate);
+  rangeEnd.setHours(23, 59, 59, 999);
+
+  if (rangeEnd < rangeStart) {
+    return { error: 'endDate cannot be before startDate' };
+  }
+
+  return { rangeStart, rangeEnd };
+};
+
+// Drop a multer temp file we are not going to use (early return / error path).
+const discardUpload = (file) => {
+  if (!file?.path) return;
+  try {
+    fs.unlinkSync(file.path);
+  } catch {
+    /* already gone – nothing to clean up */
+  }
+};
 
 // ✅ PUNCH IN/OUT
 router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) => {
@@ -23,14 +73,31 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
     console.log("REQ USER:", req.user);
 
     if (!['in', 'out'].includes(punchType)) {
+      discardUpload(req.file);
       return res.status(400).json({ message: 'Invalid or missing punch type' });
     }
     if (!lat || !lng) {
+      discardUpload(req.file);
       return res.status(400).json({ message: 'Location is required' });
     }
     if (!req.file) {
       return res.status(400).json({ message: 'Selfie is required' });
     }
+
+    // Offline replay: if this exact punch already landed, return it instead of
+    // recording a second one. Checked before the Cloudinary upload so a retry
+    // does not re-upload the selfie.
+    const clientId = readClientId(req.body);
+    const existing = await findExistingByClientId(Attendance, clientId);
+    if (existing) {
+      discardUpload(req.file);
+      console.log(`↩️  Duplicate punch replay for clientId=${clientId}, returning original`);
+      return res.status(200).json({ message: 'Punch already recorded', attendance: existing, duplicate: true });
+    }
+
+    // An offline punch carries the time it was taken on the device; a live
+    // punch has no capturedAt and falls back to the server clock.
+    const { date: punchedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
 
     // ✅ Reverse geocode
     let location = `Lat: ${lat}, Lng: ${lng}`;
@@ -52,11 +119,18 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       const result = await cloudinary.uploader.upload(req.file.path, {
         folder: "laxmipowertech/selfies",
         public_id: `${req.user.id}_${Date.now()}`,
+        // Cloudinary's perceptual-quality algorithm re-encodes the image at
+        // the smallest size that looks the same as the original — this runs
+        // once at upload time, so the stored file (and secure_url) is already
+        // the compressed version. "auto:good" biases toward preserving
+        // quality over squeezing out the last few KB.
+        quality: "auto:good",
       });
       selfieUrl = result.secure_url;
       fs.unlinkSync(req.file.path); // clean up
     } catch (uploadErr) {
       console.error("Cloudinary upload failed:", uploadErr);
+      discardUpload(req.file);
       return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
     }
 
@@ -69,12 +143,22 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
         lng: Number(lng),
         location,
         selfieUrl,
-        date: new Date(), // if schema requires
+        date: punchedAt,
+        ...(clientId ? { clientId } : {}),
+        syncedOffline: backdated,
       });
 
       await attendance.save();
       return res.status(201).json({ message: "Punch recorded", attendance });
     } catch (saveErr) {
+      // Two replays raced: the loser hit the unique clientId index. The punch
+      // exists, so this is a success from the client's point of view.
+      if (isDuplicateClientIdError(saveErr)) {
+        const winner = await findExistingByClientId(Attendance, clientId);
+        if (winner) {
+          return res.status(200).json({ message: 'Punch already recorded', attendance: winner, duplicate: true });
+        }
+      }
       console.error("DB save failed:", saveErr);
       return res.status(500).json({ error: "Failed to save attendance", details: saveErr.message });
     }
@@ -492,7 +576,7 @@ router.post('/bulk', authMiddleware, async (req, res) => {
     const errors = [];
 
     for (const record of records) {
-      const { user, branch, status, date } = record;
+      const { user, branch, status, date, punchTime } = record;
 
       if (!user || !status || !date) {
         errors.push({ user, message: 'Missing required fields' });
@@ -500,31 +584,53 @@ router.post('/bulk', authMiddleware, async (req, res) => {
       }
 
       try {
-        // Check if attendance already exists for this user on this date
-        const existingAttendance = await Attendance.findOne({
-          user,
-          date: new Date(date)
-        });
+        // in/out records are separate per direction; absent/present/half-day are one record per day
+        const startOfDay = new Date(date + 'T00:00:00.000Z');
+        const endOfDay   = new Date(date + 'T23:59:59.999Z');
+        const dateRange  = { $gte: startOfDay, $lte: endOfDay };
 
-        if (existingAttendance) {
-          // Update existing attendance
-          existingAttendance.punchType = status; // 'present', 'absent', 'half-day'
-          existingAttendance.updatedAt = new Date();
-          await existingAttendance.save();
-          results.push(existingAttendance);
+        // Guard: punch-out requires an existing punch-in on the same day
+        if (status === 'out') {
+          const hasIn = await Attendance.findOne({ user, date: dateRange, punchType: 'in' }).lean();
+          if (!hasIn) {
+            errors.push({ user, message: 'Cannot punch out without a punch in record for this date' });
+            continue;
+          }
+          // Also validate punch-out time is after punch-in time
+          if (punchTime && hasIn) {
+            const inTime  = new Date(hasIn.punchTime || hasIn.createdAt);
+            const outTime = new Date(punchTime);
+            if (outTime <= inTime) {
+              errors.push({ user, message: 'Punch out time must be after punch in time' });
+              continue;
+            }
+          }
+        }
+
+        const isPunchDirection = status === 'in' || status === 'out';
+        const query = isPunchDirection
+          ? { user, date: dateRange, punchType: status }
+          : { user, date: dateRange, punchType: { $in: ['absent', 'present', 'half-day', 'half'] } };
+
+        const existing = await Attendance.findOne(query);
+        const resolvedPunchTime = punchTime ? new Date(punchTime) : undefined;
+
+        if (existing) {
+          existing.punchType = status;
+          if (resolvedPunchTime) existing.punchTime = resolvedPunchTime;
+          if (branch) existing.branch = branch;
+          await existing.save();
+          results.push(existing);
         } else {
-          // Create new attendance record
           const attendance = new Attendance({
             user,
             branch,
             punchType: status,
             date: new Date(date),
-            lat: 0, // Labour attendance doesn't require location
+            ...(resolvedPunchTime && { punchTime: resolvedPunchTime }),
+            lat: 0,
             lng: 0,
-            location: 'Marked by Supervisor',
             selfieUrl: null,
-            createdAt: new Date(),
-            updatedAt: new Date()
           });
           await attendance.save();
           results.push(attendance);
@@ -563,8 +669,12 @@ router.get('/by-date', authMiddleware, async (req, res) => {
       return res.status(400).json({ message: 'Date is required' });
     }
 
+    // Use a full-day UTC range so records stored at any time within the day are matched
+    const startOfDay = new Date(date + 'T00:00:00.000Z');
+    const endOfDay   = new Date(date + 'T23:59:59.999Z');
+
     const query = {
-      date: new Date(date)
+      date: { $gte: startOfDay, $lte: endOfDay },
     };
 
     if (branch) {
@@ -614,5 +724,147 @@ router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
 });
 
 
+// ✅ GET: Preview how many attendance records a date/date-range delete would affect
+// (Admin) — used to populate the confirmation screen before a bulk delete.
+router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
+    }
+
+    const { startDate, endDate } = req.query;
+    const range = resolveDeleteRange(startDate, endDate);
+    if (range.error) {
+      return res.status(400).json({ message: range.error });
+    }
+    const { rangeStart, rangeEnd } = range;
+
+    const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
+    const count = await Attendance.countDocuments(query);
+    const withSelfies = await Attendance.countDocuments({
+      ...query,
+      selfieUrl: { $nin: [null, ''] },
+    });
+
+    res.json({
+      count,
+      withSelfies,
+      startDate: rangeStart.toISOString(),
+      endDate: rangeEnd.toISOString(),
+    });
+  } catch (err) {
+    console.error('Delete preview error:', err);
+    res.status(500).json({ message: 'Failed to preview attendance records', error: err.message });
+  }
+});
+
+// ✅ DELETE: Bulk-delete attendance records and/or their Cloudinary selfies for
+// a date/date-range (Admin only). The admin picks a target — database, Cloudinary,
+// or both — via deleteFromDatabase / deleteFromCloudinary. Requires the admin to
+// have typed the exact confirmation phrase, checked again here in case this is
+// called directly.
+router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
+    }
+
+    const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary } = req.body;
+
+    if (confirmationPhrase !== DELETE_CONFIRMATION_PHRASE) {
+      return res.status(400).json({
+        message: `Confirmation phrase does not match. Type "${DELETE_CONFIRMATION_PHRASE}" to proceed.`,
+      });
+    }
+
+    if (!deleteFromDatabase && !deleteFromCloudinary) {
+      return res.status(400).json({ message: 'Select at least one target: database or Cloudinary' });
+    }
+
+    const range = resolveDeleteRange(startDate, endDate);
+    if (range.error) {
+      return res.status(400).json({ message: range.error });
+    }
+    const { rangeStart, rangeEnd } = range;
+
+    const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
+    const records = await Attendance.find(query).select('selfieUrl').lean();
+
+    if (!records.length) {
+      return res.status(404).json({ message: 'No attendance records found in the selected period' });
+    }
+
+    let cloudinaryDeleted = 0;
+    let cloudinaryFailed = 0;
+
+    if (deleteFromCloudinary) {
+      // Map public_id back to its record so a Cloudinary-only delete can clear
+      // the now-dangling selfieUrl without touching the rest of the document.
+      const publicIdToRecordId = new Map();
+      records.forEach((r) => {
+        const publicId = extractCloudinaryPublicId(r.selfieUrl);
+        if (publicId) publicIdToRecordId.set(publicId, r._id);
+      });
+      const publicIds = [...publicIdToRecordId.keys()];
+      const deletedRecordIds = [];
+
+      // Batched at 100 (the admin delete_resources limit) — a Cloudinary hiccup
+      // should not block the rest of the request.
+      for (let i = 0; i < publicIds.length; i += 100) {
+        const batch = publicIds.slice(i, i + 100);
+        try {
+          const result = await cloudinary.api.delete_resources(batch);
+          batch.forEach((publicId) => {
+            if (result.deleted?.[publicId] === 'deleted') {
+              cloudinaryDeleted += 1;
+              deletedRecordIds.push(publicIdToRecordId.get(publicId));
+            } else {
+              cloudinaryFailed += 1;
+            }
+          });
+        } catch (cloudErr) {
+          console.error('Cloudinary batch delete failed:', cloudErr.message);
+          cloudinaryFailed += batch.length;
+        }
+      }
+
+      // Only clear selfieUrl when the DB record itself is being kept — if it's
+      // about to be deleted wholesale below, there's nothing to clean up here.
+      if (!deleteFromDatabase && deletedRecordIds.length) {
+        await Attendance.updateMany(
+          { _id: { $in: deletedRecordIds } },
+          { $set: { selfieUrl: null } }
+        );
+      }
+    }
+
+    let deletedCount = 0;
+    if (deleteFromDatabase) {
+      const deleteResult = await Attendance.deleteMany(query);
+      deletedCount = deleteResult.deletedCount;
+    }
+
+    console.log(
+      `🗑️  Admin ${req.user.email || req.user.id} bulk-deleted attendance for ` +
+        `${rangeStart.toISOString()} to ${rangeEnd.toISOString()} ` +
+        `(database=${!!deleteFromDatabase}, cloudinary=${!!deleteFromCloudinary}, ` +
+        `deletedCount=${deletedCount}, cloudinaryDeleted=${cloudinaryDeleted})`
+    );
+
+    res.json({
+      message: 'Attendance records processed successfully',
+      deletedCount,
+      cloudinaryDeleted,
+      cloudinaryFailed,
+      deleteFromDatabase: !!deleteFromDatabase,
+      deleteFromCloudinary: !!deleteFromCloudinary,
+      startDate: rangeStart.toISOString(),
+      endDate: rangeEnd.toISOString(),
+    });
+  } catch (err) {
+    console.error('Bulk delete attendance error:', err);
+    res.status(500).json({ message: 'Failed to delete attendance records', error: err.message });
+  }
+});
 
 export default router;
