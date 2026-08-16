@@ -18,8 +18,15 @@ const LeaveSchema = new mongoose.Schema({
   },
   approver: { type: mongoose.Schema.Types.ObjectId, ref: "User" }, // new
   approvedAt: { type: Date }, // new
+
+  // Offline sync: UUID minted on the device so a replayed request is
+  // recognised instead of inserted twice.
+  clientId: { type: String },
+  capturedAt: { type: Date },
+  syncedOffline: { type: Boolean, default: false },
 }, { timestamps: true });
 
 LeaveSchema.index({ user: 1, status: 1, startDate: 1, endDate: 1 });
+LeaveSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 export default mongoose.model("Leave", LeaveSchema);

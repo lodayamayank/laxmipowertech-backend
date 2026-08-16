@@ -5,6 +5,12 @@ import fs from "fs";
 import Reimbursement from "../models/Reimbursement.js";
 import User from "../models/User.js";
 import auth from "../middleware/authMiddleware.js";
+import {
+  resolveCapturedAt,
+  findExistingByClientId,
+  isDuplicateClientIdError,
+  readClientId,
+} from "../utils/offlineSync.js";
 
 const router = express.Router();
 
@@ -41,10 +47,25 @@ const upload = multer({
 router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
   try {
     const { items, note } = req.body;
-    
+
+    // Offline replay: return the original claim instead of filing a second one.
+    const clientId = readClientId(req.body);
+    const existing = await findExistingByClientId(Reimbursement, clientId);
+    if (existing) {
+      await existing.populate("user", "name username email mobileNumber role");
+      return res.status(200).json({
+        message: "Reimbursement already submitted",
+        reimbursement: existing,
+        duplicate: true,
+      });
+    }
+
+    // A claim submitted offline keeps the time it was filled in on the device.
+    const { date: submittedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
+
     // Parse items if it's a JSON string
     const parsedItems = typeof items === "string" ? JSON.parse(items) : items;
-    
+
     // Add uploaded file paths to respective items
     if (req.files && req.files.length > 0) {
       const receiptPaths = req.files.map(file => `/uploads/reimbursements/${file.filename}`);
@@ -66,11 +87,30 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
       items: parsedItems,
       totalAmount,
       note,
-      submittedAt: new Date(),
+      submittedAt,
+      ...(clientId ? { clientId } : {}),
+      syncedOffline: backdated,
     });
-    
-    await reimbursement.save();
-    
+
+    try {
+      await reimbursement.save();
+    } catch (saveErr) {
+      // Two replays raced; the loser hit the unique clientId index. The claim
+      // exists, so report success with the winner rather than a 500.
+      if (isDuplicateClientIdError(saveErr)) {
+        const winner = await findExistingByClientId(Reimbursement, clientId);
+        if (winner) {
+          await winner.populate("user", "name username email mobileNumber role");
+          return res.status(200).json({
+            message: "Reimbursement already submitted",
+            reimbursement: winner,
+            duplicate: true,
+          });
+        }
+      }
+      throw saveErr;
+    }
+
     // Populate user details for response
     await reimbursement.populate("user", "name username email mobileNumber role");
     
