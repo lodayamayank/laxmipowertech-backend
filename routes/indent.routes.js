@@ -485,6 +485,186 @@ router.post("/:id/materials", auth, async (req, res) => {
   }
 });
 
+// ✅ UPDATE MATERIAL ON EXISTING UPLOADED INDENT PHOTO
+router.put("/:id/materials/:materialId", auth, async (req, res) => {
+  try {
+    const { id, materialId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid indent ID"
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(materialId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid material ID"
+      });
+    }
+
+    const indent = await Indent.findById(id);
+
+    if (!indent) {
+      return res.status(404).json({
+        success: false,
+        message: "Indent not found"
+      });
+    }
+
+    const material = indent.items.id(materialId);
+
+    if (!material) {
+      return res.status(404).json({
+        success: false,
+        message: "Material not found on this Intent PO"
+      });
+    }
+
+    const {
+      itemName,
+      category,
+      subCategory,
+      subCategory1,
+      subCategory2,
+      quantity,
+      uom,
+      unit,
+      remarks,
+      vendor
+    } = req.body;
+
+    const materialName = (itemName || [
+      category,
+      subCategory,
+      subCategory1,
+      subCategory2
+    ].filter(Boolean).join(" - ")).trim();
+
+    const parsedQuantity = Number(quantity);
+
+    if (!materialName) {
+      return res.status(400).json({
+        success: false,
+        message: "Material name is required"
+      });
+    }
+
+    if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be greater than 0"
+      });
+    }
+
+    material.name = materialName;
+    material.category = category || "";
+    material.subCategory = subCategory || "";
+    material.subCategory1 = subCategory1 || "";
+    material.subCategory2 = subCategory2 || "";
+    material.quantity = parsedQuantity;
+    material.unit = unit || uom || "Nos";
+    material.remarks = remarks || "";
+
+    if (vendor) {
+      if (!mongoose.Types.ObjectId.isValid(vendor)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid vendor"
+        });
+      }
+      material.vendor = vendor;
+    } else {
+      material.vendor = undefined;
+    }
+
+    await indent.save();
+
+    const updatedIndent = await Indent.findById(indent._id)
+      .populate("project", "name")
+      .populate("branch", "name")
+      .populate("requestedBy", "name role")
+      .populate("approvedBy", "name role")
+      .populate("items.vendor", "companyName contact mobile email");
+
+    res.json({
+      success: true,
+      message: "Material updated successfully",
+      data: updatedIndent
+    });
+  } catch (err) {
+    console.error("❌ Update indent material error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to update material",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined
+    });
+  }
+});
+
+// ✅ DELETE MATERIAL FROM EXISTING UPLOADED INDENT PHOTO
+router.delete("/:id/materials/:materialId", auth, async (req, res) => {
+  try {
+    const { id, materialId } = req.params;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid indent ID"
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(materialId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid material ID"
+      });
+    }
+
+    const indent = await Indent.findById(id);
+
+    if (!indent) {
+      return res.status(404).json({
+        success: false,
+        message: "Indent not found"
+      });
+    }
+
+    const material = indent.items.id(materialId);
+
+    if (!material) {
+      return res.status(404).json({
+        success: false,
+        message: "Material not found on this Intent PO"
+      });
+    }
+
+    material.deleteOne();
+    await indent.save();
+
+    const updatedIndent = await Indent.findById(indent._id)
+      .populate("project", "name")
+      .populate("branch", "name")
+      .populate("requestedBy", "name role")
+      .populate("approvedBy", "name role")
+      .populate("items.vendor", "companyName contact mobile email");
+
+    res.json({
+      success: true,
+      message: "Material deleted successfully",
+      data: updatedIndent
+    });
+  } catch (err) {
+    console.error("❌ Delete indent material error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to delete material",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined
+    });
+  }
+});
+
 // ✅ DELETE ALL indents - MUST BE BEFORE /:id route
 router.delete('/all', auth, async (req, res) => {
   try {
