@@ -25,7 +25,8 @@ const IndentSchema = new mongoose.Schema(
         quantity: { type: Number, required: true },
         unit: { type: String, default: "pcs" },
         remarks: { type: String },
-        vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' }
+        vendor: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor' },
+        createdAt: { type: Date, default: Date.now }
       },
     ],
 

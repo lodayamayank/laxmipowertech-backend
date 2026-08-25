@@ -384,6 +384,107 @@ router.put("/:id", auth, async (req, res) => {
   }
 });
 
+// ✅ ADD MATERIAL TO EXISTING UPLOADED INDENT PHOTO
+router.post("/:id/materials", auth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid indent ID"
+      });
+    }
+
+    const {
+      itemName,
+      category,
+      subCategory,
+      subCategory1,
+      subCategory2,
+      quantity,
+      uom,
+      unit,
+      remarks,
+      vendor
+    } = req.body;
+
+    const materialName = (itemName || [
+      category,
+      subCategory,
+      subCategory1,
+      subCategory2
+    ].filter(Boolean).join(" - ")).trim();
+
+    const parsedQuantity = Number(quantity);
+
+    if (!materialName) {
+      return res.status(400).json({
+        success: false,
+        message: "Material name is required"
+      });
+    }
+
+    if (!Number.isFinite(parsedQuantity) || parsedQuantity <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be greater than 0"
+      });
+    }
+
+    const newMaterial = {
+      name: materialName,
+      category: category || "",
+      subCategory: subCategory || "",
+      subCategory1: subCategory1 || "",
+      subCategory2: subCategory2 || "",
+      quantity: parsedQuantity,
+      unit: unit || uom || "Nos",
+      remarks: remarks || ""
+    };
+
+    if (vendor) {
+      if (!mongoose.Types.ObjectId.isValid(vendor)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid vendor"
+        });
+      }
+      newMaterial.vendor = vendor;
+    }
+
+    const indent = await Indent.findById(req.params.id);
+
+    if (!indent) {
+      return res.status(404).json({
+        success: false,
+        message: "Indent not found"
+      });
+    }
+
+    indent.items.push(newMaterial);
+    await indent.save();
+
+    const updatedIndent = await Indent.findById(indent._id)
+      .populate("project", "name")
+      .populate("branch", "name")
+      .populate("requestedBy", "name role")
+      .populate("approvedBy", "name role")
+      .populate("items.vendor", "companyName contact mobile email");
+
+    res.status(201).json({
+      success: true,
+      message: "Material added to existing intent PO",
+      data: updatedIndent
+    });
+  } catch (err) {
+    console.error("❌ Add indent material error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to add material",
+      error: process.env.NODE_ENV === "development" ? err.message : undefined
+    });
+  }
+});
+
 // ✅ DELETE ALL indents - MUST BE BEFORE /:id route
 router.delete('/all', auth, async (req, res) => {
   try {
