@@ -10,6 +10,7 @@ const IndentSchema = new mongoose.Schema(
     },
     imageUrl: { type: String },
     imagePublicId: { type: String },
+    deliverySite: { type: String, index: true },
     project: { type: mongoose.Schema.Types.ObjectId, ref: "Project", required: true },
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },

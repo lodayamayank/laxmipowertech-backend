@@ -1,7 +1,11 @@
 import express from "express";
+import fs from "fs";
+import mongoose from "mongoose";
 import auth from "../middleware/authMiddleware.js";
 import Indent from "../models/Indent.js";
 import UpcomingDelivery from "../models/UpcomingDelivery.js";
+import Project from "../models/Project.js";
+import Branch from "../models/Branch.js";
 import { filterByUserBranches, applySingleSiteBranchFilter } from '../middleware/branchAuthMiddleware.js';
 import { 
   upload, 
@@ -11,6 +15,29 @@ import {
 } from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
+
+const uploadIndentPhoto = (req, res, next) => {
+  upload.single('image')(req, res, (err) => {
+    if (!err) {
+      next();
+      return;
+    }
+
+    console.error('❌ Indent image upload middleware error:', err.message);
+    res.status(400).json({
+      success: false,
+      message: err.code === 'LIMIT_FILE_SIZE'
+        ? 'Image size should be less than 10MB'
+        : err.message || 'Invalid image upload'
+    });
+  });
+};
+
+const removeTempFile = (filePath) => {
+  if (filePath && fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+};
 
 // ✅ Create new indent (User raises request)
 router.post("/", auth, async (req, res) => {
@@ -465,7 +492,7 @@ router.delete("/:id", auth, async (req, res) => {
 });
 
 // ✅ UPLOAD INDENT PHOTO - NEW ENDPOINT
-router.post("/upload-photo", upload.single('image'), async (req, res) => {
+router.post("/upload-photo", auth, uploadIndentPhoto, async (req, res) => {
   try {
     console.log('📥 Upload photo request received');
     console.log('📄 Body:', req.body);
@@ -478,30 +505,84 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
       });
     }
 
-    const { indentId, uploadedBy } = req.body;
+    const { indentId, project } = req.body;
 
     if (!indentId) {
       // Clean up uploaded file if validation fails
-      fs.unlinkSync(req.file.path);
+      removeTempFile(req.file.path);
       return res.status(400).json({ 
         success: false,
         message: 'Indent ID is required' 
       });
     }
 
-    // ✅ Generate absolute file URL with backend domain
-    const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
-    const fileUrl = `${baseURL}/uploads/indents/${req.file.filename}`;
+    const uploadedBy = req.user?.id;
+    if (!uploadedBy) {
+      removeTempFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'User information is missing. Please log in again.'
+      });
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(uploadedBy)) {
+      removeTempFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user information. Please log in again.'
+      });
+    }
+
+    const siteName = (project || '').trim();
+    if (!siteName) {
+      removeTempFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'Site is required before uploading intent list.'
+      });
+    }
+
+    const escapedSiteName = siteName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const branchDoc = await Branch.findOne({ name: new RegExp(`^${escapedSiteName}$`, 'i') });
+    let projectDoc = await Project.findOne({
+      $or: [
+        { name: new RegExp(`^${escapedSiteName}$`, 'i') },
+        ...(branchDoc ? [{ branches: branchDoc._id }] : [])
+      ]
+    });
+
+    if (!projectDoc) {
+      removeTempFile(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: `No project is linked with site "${siteName}". Please ask admin to link this site to a project.`
+      });
+    }
+
+    let uploadedImage;
+    try {
+      uploadedImage = await uploadToCloudinary(req.file.path, 'material-transfer/indents');
+    } catch (uploadErr) {
+      console.error('❌ Cloudinary upload error:', uploadErr);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to upload image. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? uploadErr.message : undefined
+      });
+    }
 
     console.log('✅ File uploaded successfully');
     console.log('🆔 Indent ID:', indentId);
-    console.log('📁 File path:', req.file.path);
-    console.log('🌐 File URL:', fileUrl);
+    console.log('🌐 File URL:', uploadedImage.url);
 
     // ✅ CREATE INDENT RECORD IN DATABASE
     const indent = new Indent({
       indentId: indentId,
-      imageUrl: fileUrl,
+      imageUrl: uploadedImage.url,
+      imagePublicId: uploadedImage.publicId,
+      deliverySite: siteName,
+      project: projectDoc._id,
+      branch: branchDoc?._id,
       requestedBy: uploadedBy,
       status: 'pending',
       items: [] // Empty items array, will be populated later if needed
@@ -546,7 +627,10 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
         _id: indent._id,
         indentId: indent.indentId,
         imageUrl: indent.imageUrl,
-        filename: req.file.filename,
+        imagePublicId: indent.imagePublicId,
+        deliverySite: indent.deliverySite,
+        project: indent.project,
+        branch: indent.branch,
         uploadedBy: indent.requestedBy,
         status: indent.status,
         createdAt: indent.createdAt
@@ -557,9 +641,7 @@ router.post("/upload-photo", upload.single('image'), async (req, res) => {
     console.error('❌ Upload photo error:', err);
     
     // Clean up file if it was uploaded but processing failed
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+    removeTempFile(req.file?.path);
     
     res.status(500).json({ 
       success: false,
