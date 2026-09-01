@@ -15,6 +15,37 @@ import {
 
 const router = express.Router();
 
+const DECIMAL_UNITS = new Set([
+  'kg', 'kgs', 'kilogram', 'kilograms',
+  'm', 'mtr', 'mtrs', 'meter', 'meters', 'metre', 'metres',
+  'ltr', 'ltrs', 'liter', 'liters', 'litre', 'litres',
+  'sqft', 'sqm', 'sq m', 'sq.m', 'cum', 'cubic meter'
+]);
+
+const toNumber = (value) => {
+  if (value === '' || value === null || value === undefined) return NaN;
+  return Number(value);
+};
+
+const getRequestedQuantity = (item) => Number(item.quantity ?? item.st_quantity ?? 0);
+
+const canUseDecimalQuantity = (unit = '') => {
+  const normalizedUnit = String(unit).trim().toLowerCase();
+  return DECIMAL_UNITS.has(normalizedUnit);
+};
+
+const getMaterialDisplayName = (item) => {
+  const parts = [
+    item.name,
+    item.category,
+    item.sub_category,
+    item.sub_category1,
+    item.sub_category2
+  ].filter(Boolean);
+
+  return parts.length ? parts.join(' - ') : item.itemId;
+};
+
 // ✅ MIGRATION ENDPOINT: Sync all existing Purchase Orders and Indents to Upcoming Deliveries
 // Call this once to create delivery records for old data: POST /api/material/upcoming-deliveries/migrate-sync
 router.post('/migrate-sync', protect, async (req, res) => {
@@ -319,15 +350,22 @@ router.post('/', protect, async (req, res) => {
   }
 });
 
-// UPDATE delivery items (batch update received quantities)
-router.put('/:id/items', async (req, res) => {
+// UPDATE delivery items (receive current delivery quantities)
+router.put('/:id/items', protect, async (req, res) => {
   try {
-    const { items } = req.body;
+    const { items, receiptAttachments = [] } = req.body;
 
     if (!items || !Array.isArray(items)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid items data'
+      });
+    }
+
+    if (items.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please submit at least one material'
       });
     }
 
@@ -339,16 +377,107 @@ router.put('/:id/items', async (req, res) => {
       });
     }
 
-    // Update items
-    items.forEach(updatedItem => {
+    const validationErrors = [];
+    const updatesToApply = [];
+
+    items.forEach((updatedItem, index) => {
       const itemIndex = delivery.items.findIndex(
         item => item.itemId === updatedItem.itemId
       );
-      
-      if (itemIndex !== -1) {
-        delivery.items[itemIndex].received_quantity = updatedItem.received_quantity || 0;
-        delivery.items[itemIndex].is_received = updatedItem.is_received || false;
+
+      if (itemIndex === -1) {
+        validationErrors.push(`Material #${index + 1} was not found in this delivery`);
+        return;
       }
+
+      const item = delivery.items[itemIndex];
+      const requestedQty = getRequestedQuantity(item);
+      const previousReceivedQty = Number(item.received_quantity || 0);
+      const remainingQty = Math.max(requestedQty - previousReceivedQty, 0);
+      const hasCurrentQuantity =
+        updatedItem.currentReceivedQuantity !== undefined ||
+        updatedItem.received_now !== undefined;
+      const currentReceivedQty = hasCurrentQuantity
+        ? toNumber(updatedItem.currentReceivedQuantity ?? updatedItem.received_now)
+        : toNumber(updatedItem.received_quantity);
+      const unit = item.uom || updatedItem.unit || updatedItem.uom || '';
+
+      if (!Number.isFinite(currentReceivedQty)) {
+        validationErrors.push(`${getMaterialDisplayName(item)}: enter a valid received quantity`);
+        return;
+      }
+
+      if (currentReceivedQty <= 0) {
+        validationErrors.push(`${getMaterialDisplayName(item)}: received quantity must be greater than 0`);
+        return;
+      }
+
+      if (currentReceivedQty > remainingQty) {
+        validationErrors.push(`${getMaterialDisplayName(item)}: received quantity cannot exceed remaining quantity (${remainingQty})`);
+        return;
+      }
+
+      if (!canUseDecimalQuantity(unit) && !Number.isInteger(currentReceivedQty)) {
+        validationErrors.push(`${getMaterialDisplayName(item)}: decimal quantity is not allowed for ${unit || 'this unit'}`);
+        return;
+      }
+
+      updatesToApply.push({
+        itemIndex,
+        item,
+        requestedQty,
+        previousReceivedQty,
+        currentReceivedQty,
+        newReceivedQty: previousReceivedQty + currentReceivedQty
+      });
+    });
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: validationErrors[0],
+        errors: validationErrors
+      });
+    }
+
+    if (updatesToApply.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid material quantities were submitted'
+      });
+    }
+
+    const deliveryTransactionId = `DEL-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    delivery.deliveryHistory = delivery.deliveryHistory || [];
+
+    updatesToApply.forEach((update) => {
+      const targetItem = delivery.items[update.itemIndex];
+      const pendingQty = Math.max(update.requestedQty - update.newReceivedQty, 0);
+
+      targetItem.received_quantity = update.newReceivedQty;
+      targetItem.pending_quantity = pendingQty;
+      targetItem.is_received = pendingQty === 0;
+      targetItem.delivery_status = pendingQty === 0
+        ? 'Fully Received'
+        : update.newReceivedQty > 0
+          ? 'Partial'
+          : 'Pending';
+
+      delivery.deliveryHistory.push({
+        materialId: targetItem.itemId,
+        materialName: getMaterialDisplayName(targetItem),
+        deliveryTransactionId,
+        quantityReceived: update.currentReceivedQty,
+        totalReceivedQuantity: update.newReceivedQty,
+        pendingQuantity: pendingQty,
+        deliveryDate: new Date(),
+        challans: receiptAttachments,
+        supervisor: {
+          id: req.user?._id?.toString() || req.user?.id || '',
+          name: req.user?.name || req.user?.email || delivery.createdBy || '',
+          role: req.user?.role || ''
+        }
+      });
     });
 
     // ✅ Auto-calculate status based on items
@@ -358,7 +487,7 @@ router.put('/:id/items', async (req, res) => {
     const calculatedStatus = calculateDeliveryStatus(delivery.items);
     delivery.status = calculatedStatus;
     
-    console.log(`📊 Status auto-calculated: ${calculatedStatus} based on item quantities`);
+    console.log(`📊 Status auto-calculated: ${calculatedStatus} based on additive delivery quantities`);
 
     await delivery.save();
 
@@ -406,7 +535,9 @@ router.put('/:id/items', async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Delivery items updated successfully',
+      message: calculatedStatus === 'Transferred'
+        ? 'Delivery fully received and moved to GRN'
+        : 'Partial delivery saved successfully',
       data: delivery
     });
   } catch (err) {
@@ -912,6 +1043,7 @@ router.post('/:id/upload-receipts', upload.array('receipts', 10), async (req, re
     res.json({
       success: true,
       message: `${newAttachments.length} receipt(s) uploaded successfully`,
+      attachments: newAttachments,
       data: delivery
     });
   } catch (err) {

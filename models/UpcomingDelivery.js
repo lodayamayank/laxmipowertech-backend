@@ -66,6 +66,12 @@ const UpcomingDeliverySchema = new mongoose.Schema({
       quantity: { type: Number },  // For PO/Indent
       uom: { type: String },  // For PO/Indent
       received_quantity: { type: Number, default: 0 },
+      pending_quantity: { type: Number, default: 0 },
+      delivery_status: { 
+        type: String, 
+        enum: ['Pending', 'Partial', 'Fully Received'],
+        default: 'Pending'
+      },
       is_received: { type: Boolean, default: false },
       remarks: { type: String }
     }
@@ -88,6 +94,30 @@ const UpcomingDeliverySchema = new mongoose.Schema({
     {
       url: { type: String, required: true },
       publicId: { type: String, required: true }
+    }
+  ],
+  deliveryHistory: [
+    {
+      materialId: { type: String, required: true },
+      materialName: { type: String },
+      deliveryTransactionId: { type: String, required: true },
+      quantityReceived: { type: Number, required: true },
+      totalReceivedQuantity: { type: Number, required: true },
+      pendingQuantity: { type: Number, required: true },
+      deliveryDate: { type: Date, default: Date.now },
+      challans: [
+        {
+          url: { type: String },
+          publicId: { type: String }
+        }
+      ],
+      supervisor: {
+        id: { type: String },
+        name: { type: String },
+        role: { type: String }
+      },
+      createdAt: { type: Date, default: Date.now },
+      updatedAt: { type: Date, default: Date.now }
     }
   ],
   // Billing Information (for GRN) - Material-wise
