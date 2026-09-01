@@ -109,6 +109,7 @@ async function connectDB(mongoUri = process.env.MONGO_URI) {
   try {
     await mongoose.connect(normalizedUri, MONGO_CONNECT_OPTIONS);
     console.log('✅ MongoDB connected successfully');
+    console.log(`Database: ${mongoose.connection.name || 'unknown'}`);
   } catch (error) {
     if (process.platform !== 'win32' || !isMongoSrvUri(normalizedUri) || !isSrvLookupFailure(error)) {
       throw error;
@@ -123,6 +124,7 @@ async function connectDB(mongoUri = process.env.MONGO_URI) {
     const fallbackUri = await buildStandardMongoUriFromSrvUri(normalizedUri);
     await mongoose.connect(fallbackUri, MONGO_CONNECT_OPTIONS);
     console.log('✅ MongoDB connected successfully');
+    console.log(`Database: ${mongoose.connection.name || 'unknown'}`);
   }
 }
 

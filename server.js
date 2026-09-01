@@ -69,11 +69,16 @@ function sanitizeMongo(obj) {
 }
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5002;
 const MONGO_URI = (process.env.MONGO_URI || '').trim();
 
 if (!MONGO_URI) {
   console.error('Missing MONGO_URI. Set it in your environment or in a .env file in the project root.');
+  process.exit(1);
+}
+
+if (MONGO_URI.includes('<') || MONGO_URI.includes('>')) {
+  console.error('MONGO_URI still contains placeholder values. Add your real MongoDB Atlas URI to backend/.env before starting locally.');
   process.exit(1);
 }
 
@@ -93,13 +98,22 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',') || [
+const configuredOrigins = process.env.CORS_ORIGINS || process.env.ALLOWED_ORIGINS || '';
+const defaultAllowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
   'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
   'https://laxmipowertech-frontend.onrender.com',
   'https://laxmipower-tech.vercel.app',
+  'https://laxmipowertech-frontend.vercel.app',
 ];
+const allowedOrigins = Array.from(
+  new Set([
+    ...configuredOrigins.split(',').map((origin) => origin.trim()).filter(Boolean),
+    ...defaultAllowedOrigins,
+  ])
+);
 
 app.use(
   cors({
@@ -124,6 +138,15 @@ app.options(/.*/, cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use('/uploads', express.static('uploads'));
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    success: true,
+    message: 'Laxmi PowerTech backend is running',
+    environment: process.env.NODE_ENV || 'development',
+    database: 'connected'
+  });
+});
 
 app.use('/api/users', userRoutes);
 app.use('/api/attendance', attendanceRoutes);
@@ -159,6 +182,7 @@ async function start() {
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Server is running on port ${PORT}`);
       console.log(`API: http://localhost:${PORT}/api`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`CORS enabled for: ${allowedOrigins.join(', ')}`);
     });
   } catch (error) {
