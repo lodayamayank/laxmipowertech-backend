@@ -10,7 +10,6 @@ const router = express.Router();
 // ✅ Login Route
 router.post('/login', async (req, res) => {
   console.log('📲 Login attempt from:', req.ip);
-  console.log('Request body:', req.body);
 
   try {
     let { username, password } = req.body;
@@ -30,11 +29,7 @@ router.post('/login', async (req, res) => {
 
     // ✅ Compare password
     const isMatch = await bcrypt.compare(password, user.password);
-    console.log("🔑 Login attempt:", {
-      entered: password,
-      stored: user.password,
-      match: isMatch,
-    });
+    console.log("🔑 Login password match:", isMatch);
 
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid credentials' });

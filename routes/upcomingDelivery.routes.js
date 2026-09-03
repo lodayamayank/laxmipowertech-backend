@@ -29,6 +29,54 @@ const toNumber = (value) => {
 
 const getRequestedQuantity = (item) => Number(item.quantity ?? item.st_quantity ?? 0);
 
+const getBillableQuantity = (item = {}) => Number(item.received_quantity || item.quantity || item.st_quantity || 0);
+
+const calculateMaterialBilling = (material = {}, itemRef = null) => {
+  const quantity = Number(material.quantity || (itemRef ? getBillableQuantity(itemRef) : 0) || 0);
+  const price = parseFloat(material.price) || 0;
+  const discount = parseFloat(material.discount) || 0;
+  const discountType = material.discountType === 'percentage' ? 'percentage' : 'flat';
+  const discountScope = material.discountScope === 'perUnit' ? 'perUnit' : 'total';
+  const grossAmount = price * quantity;
+  const discountAmount = discountType === 'percentage'
+    ? (grossAmount * discount) / 100
+    : discountScope === 'perUnit'
+      ? discount * quantity
+      : discount;
+  const totalAmount = Math.max(0, grossAmount - discountAmount);
+
+  return {
+    quantity,
+    price,
+    discount,
+    discountType,
+    discountScope,
+    grossAmount,
+    discountAmount,
+    totalAmount,
+  };
+};
+
+const calculatePaymentSummary = (finalAmount = 0, paidAmount = 0) => {
+  const payableAmount = Math.max(0, Number(finalAmount) || 0);
+  const normalizedPaidAmount = Math.min(
+    payableAmount,
+    Math.max(0, Number(paidAmount) || 0)
+  );
+  const pendingAmount = Math.max(0, payableAmount - normalizedPaidAmount);
+  const paymentStatus = normalizedPaidAmount <= 0
+    ? 'pending'
+    : pendingAmount <= 0
+      ? 'complete'
+      : 'partial';
+
+  return {
+    paidAmount: normalizedPaidAmount,
+    pendingAmount,
+    paymentStatus,
+  };
+};
+
 const canUseDecimalQuantity = (unit = '') => {
   const normalizedUnit = String(unit).trim().toLowerCase();
   return DECIMAL_UNITS.has(normalizedUnit);
@@ -767,7 +815,7 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log('📦 req.body.materialBilling type:', typeof req.body.materialBilling);
     console.log('📦 req.body.materialBilling:', req.body.materialBilling);
     
-    let { invoiceNumber, billDate, materialBilling, companyName } = req.body;
+    let { invoiceNumber, billDate, materialBilling, companyName, paidAmount } = req.body;
     
     // Handle if materialBilling comes as string (needs parsing) or array (already parsed)
     if (typeof materialBilling === 'string') {
@@ -807,6 +855,15 @@ router.put('/:id/billing', protect, async (req, res) => {
     const processedMaterialBilling = [];
     let totalPrice = 0;
     let totalDiscountAmount = 0;
+    const itemsById = new Map(
+      (delivery.items || []).map((item) => [item._id?.toString(), item])
+    );
+    const itemsByName = new Map(
+      (delivery.items || []).flatMap((item) => {
+        const names = [item.category, item.name].filter(Boolean);
+        return names.map((name) => [name, item]);
+      })
+    );
     
     console.log('🔍 Backend: Processing materialBilling');
     console.log('📦 Received materialBilling:', JSON.stringify(materialBilling, null, 2));
@@ -816,44 +873,33 @@ router.put('/:id/billing', protect, async (req, res) => {
       console.log('✅ materialBilling is valid array');
       materialBilling.forEach((material, index) => {
         console.log(`🔄 Processing material ${index}:`, material);
-        const price = parseFloat(material.price) || 0;
-        const discount = parseFloat(material.discount) || 0;
-        const discountType = material.discountType || 'flat';
+        const itemRef = itemsById.get(String(material.materialId || '')) || itemsByName.get(material.materialName);
+        const calculated = calculateMaterialBilling(material, itemRef);
         
-        console.log(`   Price: ${material.price} → ${price}`);
-        console.log(`   Discount: ${material.discount} → ${discount}`);
-        console.log(`   Type: ${discountType}`);
-        
-        // Calculate total amount per material
-        let totalAmount;
-        let discountAmount;
-        
-        if (discountType === 'percentage') {
-          discountAmount = price * discount / 100;
-          totalAmount = price - discountAmount;
-        } else {
-          discountAmount = discount;
-          totalAmount = price - discount;
-        }
-        
-        // Ensure non-negative
-        totalAmount = Math.max(0, totalAmount);
-        
-        console.log(`   Calculated discountAmount: ${discountAmount}`);
-        console.log(`   Calculated totalAmount: ${totalAmount}`);
+        console.log(`   Quantity: ${calculated.quantity}`);
+        console.log(`   Unit Price: ${material.price} → ${calculated.price}`);
+        console.log(`   Discount: ${material.discount} → ${calculated.discount}`);
+        console.log(`   Type: ${calculated.discountType}`);
+        console.log(`   Scope: ${calculated.discountScope}`);
+        console.log(`   Gross amount: ${calculated.grossAmount}`);
+        console.log(`   Calculated discountAmount: ${calculated.discountAmount}`);
+        console.log(`   Calculated totalAmount: ${calculated.totalAmount}`);
         
         processedMaterialBilling.push({
           materialId: material.materialId,
           materialName: material.materialName,
-          price: price,
-          discount: discount,
-          discountType: discountType,
-          totalAmount: totalAmount
+          quantity: calculated.quantity,
+          price: calculated.price,
+          discount: calculated.discount,
+          discountType: calculated.discountType,
+          discountScope: calculated.discountScope,
+          discountAmount: calculated.discountAmount,
+          totalAmount: calculated.totalAmount
         });
         
         // Accumulate totals
-        totalPrice += price;
-        totalDiscountAmount += discountAmount;
+        totalPrice += calculated.grossAmount;
+        totalDiscountAmount += calculated.discountAmount;
         console.log(`   Running totalPrice: ${totalPrice}`);
         console.log(`   Running totalDiscountAmount: ${totalDiscountAmount}`);
       });
@@ -865,7 +911,11 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log(`   totalPrice: ${totalPrice}`);
     console.log(`   totalDiscountAmount: ${totalDiscountAmount}`);
     
-    const finalAmount = totalPrice - totalDiscountAmount;
+    const finalAmount = Math.max(0, totalPrice - totalDiscountAmount);
+    const paymentSummary = calculatePaymentSummary(
+      finalAmount,
+      paidAmount ?? delivery.billing?.paidAmount ?? 0
+    );
     
     // ✅ CRITICAL BUSINESS RULE: Validate Work Order Limit (Project-wise)
     if (delivery.project) {
@@ -903,8 +953,9 @@ router.put('/:id/billing', protect, async (req, res) => {
       materialBilling: processedMaterialBilling,
       totalPrice: totalPrice,
       totalDiscount: totalDiscountAmount,
-      finalAmount: Math.max(0, finalAmount),
-      companyName: companyName || 'Laxmi Powertech Private Limited'  // Accept company name
+      finalAmount,
+      companyName: companyName || 'Laxmi Powertech Private Limited',  // Accept company name
+      ...paymentSummary
     };
     
     delivery.updatedAt = Date.now();
@@ -916,6 +967,8 @@ router.put('/:id/billing', protect, async (req, res) => {
     console.log(`   Total Price: ₹${totalPrice.toFixed(2)}`);
     console.log(`   Total Discount: ₹${totalDiscountAmount.toFixed(2)}`);
     console.log(`   Final Amount: ₹${finalAmount.toFixed(2)}`);
+    console.log(`   Paid Amount: ₹${paymentSummary.paidAmount.toFixed(2)}`);
+    console.log(`   Payment Status: ${paymentSummary.paymentStatus}`);
     
     res.json({
       success: true,

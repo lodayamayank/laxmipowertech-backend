@@ -124,20 +124,31 @@ const UpcomingDeliverySchema = new mongoose.Schema({
   billing: {
     invoiceNumber: { type: String },  // Auto-generated from base PO ID
     billDate: { type: Date },
+    companyName: { type: String, default: 'Laxmi Powertech Private Limited' },
     materialBilling: [
       {
         materialId: { type: String },  // Reference to item in items array
         materialName: { type: String },
+        quantity: { type: Number, default: 0 },
         price: { type: Number, default: 0 },
         discount: { type: Number, default: 0 },
         discountType: { type: String, enum: ['flat', 'percentage'], default: 'flat' },
+        discountScope: { type: String, enum: ['perUnit', 'total'], default: 'total' },
+        discountAmount: { type: Number, default: 0 },
         totalAmount: { type: Number, default: 0 }  // Auto-calculated per material
       }
     ],
     // Summary totals (auto-calculated from materialBilling)
     totalPrice: { type: Number, default: 0 },
     totalDiscount: { type: Number, default: 0 },
-    finalAmount: { type: Number, default: 0 }
+    finalAmount: { type: Number, default: 0 },
+    paidAmount: { type: Number, default: 0 },
+    pendingAmount: { type: Number, default: 0 },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'partial', 'complete'],
+      default: 'pending'
+    }
   },
   createdAt: { 
     type: Date, 

@@ -223,13 +223,21 @@ router.get('/project/:projectId', protect, async (req, res) => {
         materialBilling.forEach((material, index) => {
           const itemRef = material.materialId ? itemsIndex.get(material.materialId.toString()) : null;
 
-          const quantityRaw = material.quantity ?? itemRef?.quantity ?? itemRef?.st_quantity ?? itemRef?.received_quantity;
+          const quantityRaw = material.quantity ?? itemRef?.received_quantity ?? itemRef?.quantity ?? itemRef?.st_quantity;
           const quantity = quantityRaw !== undefined && quantityRaw !== null ? Number(quantityRaw) : null;
 
-          const grossAmount = Number(material.price ?? material.grossAmount ?? 0) || 0;
+          const unitPrice = Number(material.price ?? 0) || 0;
+          const grossAmount = Number(material.grossAmount ?? unitPrice * (quantity || 0)) || 0;
           const discountValue = Number(material.discount ?? 0) || 0;
           const discountType = material.discountType || 'flat';
-          const discountAmount = discountType === 'percentage' ? (grossAmount * discountValue) / 100 : discountValue;
+          const discountScope = material.discountScope || 'total';
+          const discountAmount = Number(material.discountAmount ?? (
+            discountType === 'percentage'
+              ? (grossAmount * discountValue) / 100
+              : discountScope === 'perUnit'
+                ? discountValue * (quantity || 0)
+                : discountValue
+          )) || 0;
 
           let totalAmount = material.totalAmount;
           if (totalAmount === undefined || totalAmount === null) {

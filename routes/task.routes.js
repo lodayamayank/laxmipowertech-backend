@@ -2,6 +2,7 @@ import express from 'express';
 import auth from '../middleware/authMiddleware.js';
 import Task from '../models/Task.js';
 import Project from '../models/Project.js';
+import User from '../models/User.js';
 import { filterByUserBranches } from '../middleware/branchAuthMiddleware.js';
 import { upload, uploadToCloudinary, deleteFromCloudinary } from '../middleware/cloudinaryMaterialMiddleware.js';
 import {
@@ -12,6 +13,36 @@ import {
 } from '../utils/offlineSync.js';
 
 const router = express.Router();
+
+const isSupervisorAssignedToProject = async (supervisorId, projectId) => {
+  const [project, supervisor] = await Promise.all([
+    Project.findById(projectId).select('branches').lean(),
+    User.findById(supervisorId).select('role project assignedBranches').lean(),
+  ]);
+
+  if (!project || !supervisor) return false;
+  if (!['supervisor', 'subcontractor'].includes(supervisor.role)) return false;
+  if (supervisor.project?.toString() === projectId.toString()) return true;
+
+  const projectBranchIds = new Set((project.branches || []).map((branch) => branch.toString()));
+  return (supervisor.assignedBranches || []).some((branch) =>
+    projectBranchIds.has(branch.toString())
+  );
+};
+
+const ensureSupervisorAssignedToProject = async (supervisorId, projectId, res) => {
+  const isAssigned = await isSupervisorAssignedToProject(supervisorId, projectId);
+
+  if (!isAssigned) {
+    res.status(400).json({
+      success: false,
+      message: 'Selected supervisor is not assigned to this project',
+    });
+    return false;
+  }
+
+  return true;
+};
 
 // Admin create task (Admin can create for any supervisor)
 router.post('/admin', auth, upload.single('photo'), async (req, res) => {
@@ -32,6 +63,10 @@ router.post('/admin', auth, upload.single('photo'), async (req, res) => {
         success: false,
         message: 'All hierarchy levels and supervisor are required' 
       });
+    }
+
+    if (!(await ensureSupervisorAssignedToProject(supervisor, project, res))) {
+      return;
     }
 
     let photoUrl, photoPublicId;
@@ -435,6 +470,16 @@ router.put('/:id', auth, upload.single('photo'), async (req, res) => {
     }
 
     const { project, branch, building, wing, floor, flat, room, supervisor, notes, status } = req.body;
+    const effectiveProject = project || task.project;
+    const effectiveSupervisor = supervisor || task.supervisor;
+
+    if (
+      effectiveProject &&
+      effectiveSupervisor &&
+      !(await ensureSupervisorAssignedToProject(effectiveSupervisor, effectiveProject, res))
+    ) {
+      return;
+    }
     
     // Update fields if provided
     if (project) task.project = project;
