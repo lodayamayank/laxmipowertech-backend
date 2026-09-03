@@ -13,7 +13,7 @@ POST https://laxmipowertech-backend-1.onrender.com/api/material/purchase-orders 
 ## Root Cause Analysis
 
 ### Primary Issue: Schema Mismatch
-The frontend `IntentForm.jsx` was sending `subCategory2` field in the materials array, but the backend models were missing this field, causing Mongoose validation to fail and crash the server.
+The frontend `IntentForm.jsx` was sending `subCategory2` field in the materials array, but the backend models were missing this field, causing Mongoose validation to fail and crash the server
 
 **Frontend Payload (IntentForm.jsx line 315-323):**
 ```javascript
