@@ -5,6 +5,19 @@ import Bill from '../models/Bill.js';
 
 const router = express.Router();
 
+const subtractOneMonth = (date) => {
+  const reminderDate = new Date(date);
+  const originalDay = reminderDate.getDate();
+  reminderDate.setMonth(reminderDate.getMonth() - 1);
+
+  if (reminderDate.getDate() !== originalDay) {
+    reminderDate.setDate(0);
+  }
+
+  reminderDate.setHours(0, 0, 0, 0);
+  return reminderDate;
+};
+
 // ─────────────────────────────────────────────
 // WORK ORDER ROUTES
 // ─────────────────────────────────────────────
@@ -148,6 +161,23 @@ router.patch('/:id/status', auth, async (req, res) => {
 // PATCH /api/work-orders/:id/trigger — Trigger (lock) a work order
 router.patch('/:id/trigger', auth, async (req, res) => {
   try {
+    const { retentionAmount, retentionDueDate, retentionNotes } = req.body;
+    const parsedRetentionAmount = Number(retentionAmount);
+
+    if (!Number.isFinite(parsedRetentionAmount) || parsedRetentionAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Retention amount must be greater than 0' });
+    }
+
+    if (!retentionDueDate) {
+      return res.status(400).json({ success: false, message: 'Retention due date is required' });
+    }
+
+    const parsedDueDate = new Date(retentionDueDate);
+    if (Number.isNaN(parsedDueDate.getTime())) {
+      return res.status(400).json({ success: false, message: 'Invalid retention due date' });
+    }
+    parsedDueDate.setHours(0, 0, 0, 0);
+
     const workOrder = await WorkOrder.findById(req.params.id);
     if (!workOrder) {
       return res.status(404).json({ success: false, message: 'Work order not found' });
@@ -161,6 +191,11 @@ router.patch('/:id/trigger', auth, async (req, res) => {
     workOrder.status = 'triggered';
     workOrder.triggeredAt = new Date();
     workOrder.triggeredBy = req.user.id;
+    workOrder.retentionAmount = parsedRetentionAmount;
+    workOrder.retentionDueDate = parsedDueDate;
+    workOrder.retentionReminderDate = subtractOneMonth(parsedDueDate);
+    workOrder.retentionNotes = retentionNotes?.trim() || '';
+    workOrder.retentionReminderSentAt = null;
     await workOrder.save();
 
     await workOrder.populate('project', 'name');

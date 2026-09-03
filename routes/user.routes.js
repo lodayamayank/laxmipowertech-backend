@@ -6,6 +6,8 @@ import authMiddleware from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
+const sanitizeUserQuery = (query) => query.select('-password');
+
 // Get allowed roles
 router.get('/roles', (req, res) => {
   const roles = User.schema.path('role').enumValues;
@@ -54,7 +56,7 @@ router.post('/register', authMiddleware, async (req, res) => {
 
     await newUser.save();
 
-    const populatedUser = await User.findById(newUser._id)
+    const populatedUser = await sanitizeUserQuery(User.findById(newUser._id))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
@@ -79,7 +81,7 @@ router.post('/register', authMiddleware, async (req, res) => {
 // ✅ Get current user profile
 router.get('/me', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.user.id)
+    const user = await sanitizeUserQuery(User.findById(req.user.id))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
@@ -107,7 +109,7 @@ router.get('/', authMiddleware, async (req, res) => {
       filter.assignedBranches = branch;
     }
     
-    const users = await User.find(filter)
+    const users = await sanitizeUserQuery(User.find(filter))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
     res.json(users);
@@ -122,17 +124,11 @@ router.put('/me', authMiddleware, async (req, res) => {
     const userId = req.user._id;
     const updateData = { ...req.body };
 
-    if (updateData.password && updateData.password.trim()) {
-      updateData.password = await bcrypt.hash(updateData.password.trim(), 10);
-    } else {
-      delete updateData.password;
-    }
-
     const allowedFields = [
-      'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
+      'name', 'email', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
       'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
       'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
-      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password',
+      'department', 'jobTitle',
       'ctcAmount', 'salaryType', 'salaryEffectiveDate',
       'perDayTravelAllowance', 'railwayPassAmount', 
       'standardDailyHours', 'overtimeRateMultiplier' 
@@ -142,7 +138,7 @@ router.put('/me', authMiddleware, async (req, res) => {
       if (!allowedFields.includes(key)) delete updateData[key];
     });
 
-    const updated = await User.findByIdAndUpdate(userId, updateData, { new: true })
+    const updated = await sanitizeUserQuery(User.findByIdAndUpdate(userId, updateData, { new: true }))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
@@ -153,10 +149,45 @@ router.put('/me', authMiddleware, async (req, res) => {
   }
 });
 
+// ✅ Authenticated users can change their own password after verifying current password.
+router.patch('/me/password', authMiddleware, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Current password and new password are required' });
+    }
+
+    if (String(newPassword).trim().length < 6) {
+      return res.status(400).json({ message: 'New password must be at least 6 characters' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    if (!['supervisor', 'labour'].includes(user.role)) {
+      return res.status(403).json({ message: 'Password change is available for supervisors and labours only' });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    user.password = String(newPassword).trim();
+    await user.save();
+
+    res.json({ message: 'Password updated successfully' });
+  } catch (err) {
+    console.error('❌ Password update failed:', err);
+    res.status(500).json({ message: 'Failed to update password', error: err.message });
+  }
+});
+
 // ✅ Get single user by ID
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
-    const user = await User.findById(req.params.id)
+    const user = await sanitizeUserQuery(User.findById(req.params.id))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
     
@@ -179,6 +210,9 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const updateData = { ...req.body };
 
     if (updateData.password && updateData.password.trim()) {
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ message: 'Only admins can set another user password' });
+      }
       updateData.password = await bcrypt.hash(updateData.password.trim(), 10);
     } else {
       delete updateData.password;
@@ -229,7 +263,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
     });
     // console.log(' [Backend] Final updateData after removing empty strings:', updateData);
 
-    const updatedUser = await User.findByIdAndUpdate(
+    const updatedUser = await sanitizeUserQuery(User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },  // Use $set operator explicitly
       {
@@ -237,7 +271,7 @@ router.put('/:id', authMiddleware, async (req, res) => {
         runValidators: true,
         strict: false  // Allow fields not in schema (shouldn't be needed but helps debug)
       }
-    )
+    ))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
@@ -310,11 +344,11 @@ router.put('/:id/personal', authMiddleware, async (req, res) => {
     delete updateData.password; // ⚠️ Never update password through this route
     delete updateData.username; // ⚠️ Never update username through this route
 
-    const updated = await User.findByIdAndUpdate(
+    const updated = await sanitizeUserQuery(User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },
       { new: true }
-    );
+    ));
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to update personal info', error: err.message });
@@ -327,11 +361,11 @@ router.put('/:id/employee', authMiddleware, async (req, res) => {
     delete updateData.password; // ⚠️ Never update password through this route
     delete updateData.username; // ⚠️ Never update username through this route
 
-    const updated = await User.findByIdAndUpdate(
+    const updated = await sanitizeUserQuery(User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },
       { new: true }
-    );
+    ));
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to update employee info', error: err.message });
@@ -370,11 +404,11 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
     if (otherAmount !== undefined) updateData.otherAmount = otherAmount;
     if (otherAmountType !== undefined) updateData.otherAmountType = otherAmountType;
 
-    const updatedUser = await User.findByIdAndUpdate(
+    const updatedUser = await sanitizeUserQuery(User.findByIdAndUpdate(
       req.params.id,
       { $set: updateData },
       { new: true, runValidators: true }
-    )
+    ))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
 
