@@ -94,6 +94,43 @@ const getMaterialDisplayName = (item) => {
   return parts.length ? parts.join(' - ') : item.itemId;
 };
 
+const addAndCondition = (query, condition) => {
+  const nextQuery = { ...query };
+  const conditions = [];
+
+  if (nextQuery.$and) {
+    conditions.push(...nextQuery.$and);
+    delete nextQuery.$and;
+  }
+
+  if (nextQuery.$or) {
+    conditions.push({ $or: nextQuery.$or });
+    delete nextQuery.$or;
+  }
+
+  conditions.push(condition);
+  nextQuery.$and = conditions;
+  return nextQuery;
+};
+
+const getUserDeliveryIdentifiers = (user = {}) => (
+  [
+    user.id,
+    user._id?.toString?.(),
+    user.name,
+    user.username,
+    user.email
+  ]
+    .filter(Boolean)
+    .map(value => String(value))
+);
+
+const getSourceSyncId = (delivery) => (
+  delivery.source_id ||
+  delivery.st_id ||
+  String(delivery.transfer_number || '').replace(/-\d{2}$/, '')
+);
+
 // ✅ MIGRATION ENDPOINT: Sync all existing Purchase Orders and Indents to Upcoming Deliveries
 // Call this once to create delivery records for old data: POST /api/material/upcoming-deliveries/migrate-sync
 router.post('/migrate-sync', protect, async (req, res) => {
@@ -285,6 +322,17 @@ router.get('/', protect, filterByUserBranches, async (req, res) => {
     // ✅ Apply branch-based filtering (admin sees all, clients see only their branches)
     query = applyBranchFilter(req, query, 'from', 'to');
 
+    if (['supervisor', 'subcontractor'].includes(req.user?.role)) {
+      const userIdentifiers = getUserDeliveryIdentifiers(req.user);
+      query = addAndCondition(query, {
+        $or: [
+          { type: { $ne: 'PO' } },
+          { createdBy: { $in: userIdentifiers } },
+          { requested_by: { $in: userIdentifiers } }
+        ]
+      });
+    }
+
     // Add search filters
     if (search) {
       const searchConditions = [
@@ -295,16 +343,7 @@ router.get('/', protect, filterByUserBranches, async (req, res) => {
         { createdBy: { $regex: search, $options: 'i' } }
       ];
       
-      // Combine branch filter with search
-      if (query.$or) {
-        query.$and = [
-          { $or: query.$or },
-          { $or: searchConditions }
-        ];
-        delete query.$or;
-      } else {
-        query.$or = searchConditions;
-      }
+      query = addAndCondition(query, { $or: searchConditions });
     }
 
     const deliveries = await UpcomingDelivery.find(query)
@@ -554,30 +593,30 @@ router.put('/:id/items', protect, async (req, res) => {
         if (indent) {
           // Map UpcomingDelivery status back to Indent status
           let indentStatus = 'pending';
-          if (delivery.status === 'Transferred') indentStatus = 'transferred';
+          if (delivery.status === 'Transferred') indentStatus = 'delivered';
           else if (delivery.status === 'Partial') indentStatus = 'approved';
           else if (delivery.status === 'Pending') indentStatus = 'pending';
-          else if (delivery.status === 'Cancelled') indentStatus = 'cancelled';
+          else if (delivery.status === 'Cancelled') indentStatus = 'rejected';
           
           indent.status = indentStatus;
           await indent.save();
           console.log(`🔄 Synced to Indent ${delivery.st_id}: ${delivery.status} → ${indentStatus}`);
         } else {
           // If not an Indent, try PurchaseOrder
-          await syncToPurchaseOrder(delivery.st_id, {
+          await syncToPurchaseOrder(getSourceSyncId(delivery), {
             status: delivery.status,
             items: delivery.items
           });
-          console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
+          console.log(`🔄 Synced to PurchaseOrder ${getSourceSyncId(delivery)}`);
         }
       } catch (indentErr) {
         console.log('⚠️ Trying PurchaseOrder sync:', indentErr.message);
         // Try PurchaseOrder sync as fallback
-        await syncToPurchaseOrder(delivery.st_id, {
+        await syncToPurchaseOrder(getSourceSyncId(delivery), {
           status: delivery.status,
           items: delivery.items
         });
-        console.log(`🔄 Synced to PurchaseOrder ${delivery.st_id}`);
+        console.log(`🔄 Synced to PurchaseOrder ${getSourceSyncId(delivery)}`);
       }
     }
 
@@ -678,28 +717,28 @@ router.put('/:id/status', protect, async (req, res) => {
           if (indent) {
             // Map UpcomingDelivery status back to Indent status
             let indentStatus = 'pending';
-            if (normalizedStatus === 'Transferred') indentStatus = 'transferred';
+            if (normalizedStatus === 'Transferred') indentStatus = 'delivered';
             else if (normalizedStatus === 'Partial') indentStatus = 'approved'; // Partial = Approved
             else if (normalizedStatus === 'Pending') indentStatus = 'pending';
-            else if (normalizedStatus === 'Cancelled') indentStatus = 'cancelled';
+            else if (normalizedStatus === 'Cancelled') indentStatus = 'rejected';
             
             indent.status = indentStatus;
             await indent.save();
             console.log(`🔄 Status synced to Indent ${delivery.st_id}: ${normalizedStatus} → ${indentStatus}`);
           } else {
             // If not an Indent, try PurchaseOrder
-            await syncToPurchaseOrder(delivery.st_id, {
+            await syncToPurchaseOrder(getSourceSyncId(delivery), {
               status: normalizedStatus
             });
-            console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
+            console.log(`🔄 Status synced to PurchaseOrder ${getSourceSyncId(delivery)}`);
           }
         } catch (indentErr) {
           console.log('⚠️ Trying PurchaseOrder sync:', indentErr.message);
           // Try PurchaseOrder sync as fallback
-          await syncToPurchaseOrder(delivery.st_id, {
+          await syncToPurchaseOrder(getSourceSyncId(delivery), {
             status: normalizedStatus
           });
-          console.log(`🔄 Status synced to PurchaseOrder ${delivery.st_id}`);
+          console.log(`🔄 Status synced to PurchaseOrder ${getSourceSyncId(delivery)}`);
         }
       }
     } catch (syncErr) {

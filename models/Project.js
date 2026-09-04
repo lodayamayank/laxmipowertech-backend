@@ -9,6 +9,7 @@ const flatSchema = new mongoose.Schema({
   name: { type: String, required: true },
   flatNumber: { type: String }, // e.g., 'A101', '101'
   flatType: { type: String }, // e.g., '1BHK', '2BHK', '3BHK'
+  unitCategory: { type: String, enum: ['residential', 'commercial'], default: 'residential' },
   area: { type: Number }, // Square feet/meters
   variation: { type: String, default: 'Standard' }, // e.g., 'Standard', 'Premium', 'Deluxe'
   bedroomCount: { type: Number, default: 2 }, // Number of bedrooms
@@ -24,6 +25,7 @@ const floorSchema = new mongoose.Schema({
   name: { type: String, required: true },
   floorNumber: { type: Number }, // -2, -1, 0, 1, 2, etc.
   isBasement: { type: Boolean, default: false },
+  usageType: { type: String, enum: ['residential', 'commercial', 'mixed'], default: 'residential' },
   flats: [flatSchema],
 });
 
@@ -49,6 +51,7 @@ const commonAreaSchema = new mongoose.Schema({
 
 const buildingSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  usageType: { type: String, enum: ['residential', 'commercial', 'mixed'], default: 'residential' },
   staircases: [staircaseSchema], // Array of staircases in this building
   podiums: [podiumSchema], // Array of podiums in this building
   commonAreas: [commonAreaSchema], // Array of common areas in this building

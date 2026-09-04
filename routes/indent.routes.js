@@ -144,7 +144,7 @@ router.put("/:id/status", auth, async (req, res) => {
         let deliveryStatus = 'Pending';
         if (status === 'transferred') deliveryStatus = 'Transferred';
         else if (status === 'delivered') deliveryStatus = 'Transferred';
-        else if (status === 'approved') deliveryStatus = 'Partial'; // ✅ CRITICAL FIX: Approved = Partial
+        else if (status === 'approved') deliveryStatus = 'Pending';
         else if (status === 'pending') deliveryStatus = 'Pending';
         else if (status === 'rejected' || status === 'cancelled') deliveryStatus = 'Cancelled';
         
@@ -196,22 +196,18 @@ router.put("/:id/approve", auth, async (req, res) => {
     console.log('✅ Indent approved:', indent.indentId);
     console.log('📦 Items count:', indent.items?.length || 0);
     
-    // Check if all items have vendors assigned
+    // Vendor assignment is preferred, but approval should still create an
+    // upcoming delivery so the requesting supervisor can receive materials.
     const itemsWithoutVendor = indent.items.filter(item => !item.vendor);
     if (itemsWithoutVendor.length > 0) {
       console.warn('⚠️ Items without vendor:', itemsWithoutVendor.length);
-      return res.status(400).json({
-        success: false,
-        message: `Cannot approve: ${itemsWithoutVendor.length} item(s) do not have a vendor assigned. Please assign vendors to all items before approval.`,
-        itemsWithoutVendor: itemsWithoutVendor.map(item => item.name)
-      });
     }
     
     // Group items by vendor
     const vendorGroups = {};
     
     indent.items.forEach((item, index) => {
-      const vendorId = item.vendor?._id?.toString() || 'no-vendor';
+      const vendorId = item.vendor?._id?.toString() || 'unassigned';
       
       if (!vendorGroups[vendorId]) {
         vendorGroups[vendorId] = {
@@ -234,11 +230,6 @@ router.put("/:id/approve", auth, async (req, res) => {
     let vendorSequence = 1;
     
     for (const [vendorId, group] of vendorEntries) {
-      if (vendorId === 'no-vendor') {
-        console.log('⚠️ Skipping items without vendor');
-        continue;
-      }
-      
       const deliveryItems = group.items.map(item => ({
         itemId: item._id.toString(),
         name: item.name,
@@ -257,27 +248,30 @@ router.put("/:id/approve", auth, async (req, res) => {
       const vendorSuffix = vendorSequence.toString().padStart(2, '0');
       const derivedDeliveryId = `${indent.indentId}-${vendorSuffix}`;
       
-      // Create delivery entry for this vendor
-      const delivery = new UpcomingDelivery({
+      const deliveryPayload = {
         st_id: indent._id.toString(),
         source_type: 'Indent',
         source_id: indent.indentId,  // Base Intent ID (for tracking)
         transfer_number: derivedDeliveryId,  // Vendor-specific ID with suffix
         date: new Date(),
         from: group.vendorInfo?.companyName || 'Vendor/Supplier',  // ✅ Vendor name as 'From'
-        to: indent.branch?.name || indent.project?.name || 'N/A',  // ✅ Delivery site as 'To'
+        to: indent.branch?.name || indent.deliverySite || indent.project?.name || 'N/A',  // ✅ Delivery site as 'To'
         type: 'PO',  // REQUIRED field per UpcomingDelivery schema - DO NOT REMOVE
-        vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
-        vendor_id: vendorId,
-        delivery_site: indent.branch?.name || 'N/A',
+        vendor_name: group.vendorInfo?.companyName || 'Unassigned Vendor',
+        vendor_id: vendorId === 'unassigned' ? '' : vendorId,
+        delivery_site: indent.branch?.name || indent.deliverySite || 'N/A',
         requested_by: indent.requestedBy?.name || 'Unknown',
         createdBy: indent.requestedBy?.name || 'Unknown',  // ✅ Add createdBy field
         items: deliveryItems,
         status: 'Pending',
         created_date: new Date()
-      });
+      };
       
-      await delivery.save();
+      const delivery = await UpcomingDelivery.findOneAndUpdate(
+        { transfer_number: derivedDeliveryId },
+        deliveryPayload,
+        { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+      );
       createdDeliveries.push(delivery);
       vendorSequence++;
       
@@ -288,9 +282,9 @@ router.put("/:id/approve", auth, async (req, res) => {
     try {
       const delivery = await UpcomingDelivery.findOne({ st_id: indent._id.toString() });
       if (delivery) {
-        delivery.status = 'Partial';
+        delivery.status = 'Pending';
         await delivery.save();
-        console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: Partial`);
+        console.log(`🔄 Synced Indent ${indent.indentId} status to UpcomingDelivery: Pending`);
       }
     } catch (syncErr) {
       console.error('⚠️ Failed to sync status to UpcomingDelivery:', syncErr.message);
@@ -357,7 +351,7 @@ router.put("/:id", auth, async (req, res) => {
           // Map indent status to delivery status
           let deliveryStatus = 'Pending';
           if (status === 'transferred' || status === 'delivered') deliveryStatus = 'Transferred';
-          else if (status === 'approved') deliveryStatus = 'Partial';
+          else if (status === 'approved') deliveryStatus = 'Pending';
           else if (status === 'pending') deliveryStatus = 'Pending';
           else if (status === 'rejected' || status === 'cancelled') deliveryStatus = 'Cancelled';
           
@@ -947,7 +941,7 @@ router.post("/sync-all", auth, async (req, res) => {
           let deliveryStatus = 'Pending';
           if (indent.status === 'transferred') deliveryStatus = 'Transferred';
           else if (indent.status === 'delivered') deliveryStatus = 'Transferred';
-          else if (indent.status === 'approved') deliveryStatus = 'Partial'; // ✅ Approved = Partial
+          else if (indent.status === 'approved') deliveryStatus = 'Pending';
           else if (indent.status === 'pending') deliveryStatus = 'Pending';
           else if (indent.status === 'rejected' || indent.status === 'cancelled') deliveryStatus = 'Cancelled';
           

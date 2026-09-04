@@ -6,6 +6,23 @@
 import SiteTransfer from '../models/SiteTransfer.js';
 import PurchaseOrder from '../models/PurchaseOrder.js';
 import UpcomingDelivery from '../models/UpcomingDelivery.js';
+import mongoose from 'mongoose';
+
+const buildSourceLookup = (sourceId) => {
+  const id = String(sourceId || '').trim();
+  const conditions = [
+    { purchaseOrderId: id },
+    { st_id: id },
+    { source_id: id },
+    { transfer_number: id }
+  ];
+
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    conditions.unshift({ _id: id });
+  }
+
+  return { $or: conditions };
+};
 
 /**
  * Calculate status based on items
@@ -22,10 +39,9 @@ export const calculateDeliveryStatus = (items) => {
   
   // Check if all materials are fully received
   const allReceived = items.every(item => {
-    const requestedQty = item.quantity || item.st_quantity || 0;
-    const receivedQty = item.received_quantity || 0;
-    // Both conditions: checkbox checked AND quantity matches
-    return item.is_received && receivedQty >= requestedQty;
+    const requestedQty = Number(item.quantity ?? item.st_quantity ?? 0);
+    const receivedQty = Number(item.received_quantity || 0);
+    return requestedQty > 0 && receivedQty >= requestedQty;
   });
   
   // Check if no materials received at all
@@ -62,7 +78,7 @@ export const mapToSourceStatus = (deliveryStatus) => {
 export const mapToDeliveryStatus = (sourceStatus) => {
   const statusMap = {
     'pending': 'Pending',
-    'approved': 'Partial',
+    'approved': 'Pending',
     'transferred': 'Transferred',
     'cancelled': 'Cancelled'
   };
@@ -134,7 +150,7 @@ export const syncToPurchaseOrder = async (poId, updates, skipSync = false) => {
   if (skipSync) return; // Prevent circular updates
   
   try {
-    const purchaseOrder = await PurchaseOrder.findOne({ purchaseOrderId: poId });
+    const purchaseOrder = await PurchaseOrder.findOne(buildSourceLookup(poId));
     if (!purchaseOrder) {
       console.warn(`⚠️  Purchase Order not found for po_id: ${poId}`);
       return;
@@ -194,7 +210,13 @@ export const syncToUpcomingDelivery = async (sourceId, updates, skipSync = false
   if (skipSync) return; // Prevent circular updates
   
   try {
-    const delivery = await UpcomingDelivery.findOne({ st_id: sourceId });
+    const delivery = await UpcomingDelivery.findOne({
+      $or: [
+        { st_id: sourceId },
+        { source_id: sourceId },
+        { transfer_number: sourceId }
+      ]
+    });
     if (!delivery) {
       console.warn(`⚠️  Upcoming Delivery not found for source_id: ${sourceId}`);
       return;
@@ -284,9 +306,16 @@ export const syncStatusChange = async (sourceId, newStatus, source = 'upcomingDe
  */
 export const deleteUpcomingDeliveryBySourceId = async (sourceId) => {
   try {
-    const result = await UpcomingDelivery.findOneAndDelete({ st_id: sourceId });
-    if (result) {
-      console.log(`✅ Deleted Upcoming Delivery for source_id: ${sourceId}`);
+    const result = await UpcomingDelivery.deleteMany({
+      $or: [
+        { st_id: sourceId },
+        { source_id: sourceId },
+        { transfer_number: sourceId },
+        { transfer_number: { $regex: `^${String(sourceId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-` } }
+      ]
+    });
+    if (result.deletedCount > 0) {
+      console.log(`✅ Deleted ${result.deletedCount} Upcoming Delivery record(s) for source_id: ${sourceId}`);
     }
   } catch (error) {
     console.error(`❌ Error deleting Upcoming Delivery (${sourceId}):`, error.message);

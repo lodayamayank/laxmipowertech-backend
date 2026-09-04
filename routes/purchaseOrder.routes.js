@@ -110,7 +110,7 @@ const syncToUpcomingDelivery = async (purchaseOrder) => {
     // ✅ CRITICAL FIX: Map PurchaseOrder status to UpcomingDelivery status
     let deliveryStatus = 'Pending';
     if (purchaseOrder.status === 'transferred') deliveryStatus = 'Transferred';
-    else if (purchaseOrder.status === 'approved') deliveryStatus = 'Partial';
+    else if (purchaseOrder.status === 'approved') deliveryStatus = 'Pending';
     else if (purchaseOrder.status === 'pending') deliveryStatus = 'Pending';
     else if (purchaseOrder.status === 'cancelled') deliveryStatus = 'Cancelled';
     
@@ -435,24 +435,12 @@ router.put('/:id/approve', async (req, res) => {
       vendorName: m.vendor?.companyName || 'NO VENDOR'
     })));
     
-    // ✅ Check if materials have vendors assigned BEFORE saving approval
+    // Vendor assignment is preferred, but approval should still create an upcoming
+    // delivery so the requesting supervisor can receive the material.
     const materialsWithoutVendor = purchaseOrder.materials.filter(m => !m.vendor);
     if (materialsWithoutVendor.length > 0) {
       console.warn('⚠️ Materials without vendor:', materialsWithoutVendor.length);
       console.warn('⚠️ Materials:', materialsWithoutVendor.map(m => m.itemName));
-      
-      // ✅ OPTION 1: Allow approval but warn that deliveries won't be created
-      // Update status to approved anyway
-      purchaseOrder.status = 'approved';
-      await purchaseOrder.save();
-      
-      return res.status(200).json({
-        success: true,
-        message: `Purchase order approved, but ${materialsWithoutVendor.length} material(s) do not have vendors assigned. Assign vendors to create delivery entries.`,
-        warning: true,
-        data: purchaseOrder,
-        materialsWithoutVendor: materialsWithoutVendor.map(m => m.itemName)
-      });
     }
     
     // Update status to approved
@@ -460,18 +448,18 @@ router.put('/:id/approve', async (req, res) => {
     await purchaseOrder.save();
     console.log('✅ Purchase order approved:', purchaseOrder.purchaseOrderId);
     
-    // Group materials by vendor (only materials WITH vendors)
+    // Group materials by vendor. Materials without a vendor are kept in one
+    // unassigned supplier delivery instead of getting lost after approval.
     const vendorGroups = {};
-    const materialsWithVendors = purchaseOrder.materials.filter(m => m.vendor);
     
-    console.log(`📊 Materials with vendors: ${materialsWithVendors.length}/${purchaseOrder.materials.length}`);
+    console.log(`📊 Materials with vendors: ${purchaseOrder.materials.length - materialsWithoutVendor.length}/${purchaseOrder.materials.length}`);
     
-    materialsWithVendors.forEach((material, index) => {
-      const vendorId = material.vendor._id.toString();
+    purchaseOrder.materials.forEach((material, index) => {
+      const vendorId = material.vendor?._id?.toString() || 'unassigned';
       
       if (!vendorGroups[vendorId]) {
         vendorGroups[vendorId] = {
-          vendorInfo: material.vendor,
+          vendorInfo: material.vendor || null,
           materials: []
         };
       }
@@ -511,8 +499,7 @@ router.put('/:id/approve', async (req, res) => {
         const vendorSuffix = vendorSequence.toString().padStart(2, '0');
         const derivedDeliveryId = `${purchaseOrder.purchaseOrderId}-${vendorSuffix}`;
         
-        // Create delivery entry for this vendor
-        const delivery = new UpcomingDelivery({
+        const deliveryPayload = {
           st_id: purchaseOrder._id.toString(),
           source_type: 'PurchaseOrder',
           source_id: purchaseOrder.purchaseOrderId,  // Base PO ID (for tracking)
@@ -521,8 +508,8 @@ router.put('/:id/approve', async (req, res) => {
           from: group.vendorInfo?.companyName || 'Vendor/Supplier',  // ✅ Vendor name as 'From'
           to: purchaseOrder.deliverySite || 'N/A',  // ✅ Delivery site as 'To'
           type: 'PO',  // REQUIRED field - DO NOT REMOVE (schema validation)
-          vendor_name: group.vendorInfo?.companyName || 'Unknown Vendor',
-          vendor_id: vendorId,
+          vendor_name: group.vendorInfo?.companyName || 'Unassigned Vendor',
+          vendor_id: vendorId === 'unassigned' ? '' : vendorId,
           delivery_site: purchaseOrder.deliverySite || 'N/A',
           requested_by: purchaseOrder.requestedBy || 'Unknown',
           createdBy: purchaseOrder.requestedBy || 'Unknown',  // ✅ Add createdBy field
@@ -530,9 +517,13 @@ router.put('/:id/approve', async (req, res) => {
           status: 'Pending',
           created_date: new Date(),
           expected_delivery: purchaseOrder.requestDate || new Date()
-        });
+        };
         
-        await delivery.save();
+        const delivery = await UpcomingDelivery.findOneAndUpdate(
+          { transfer_number: derivedDeliveryId },
+          deliveryPayload,
+          { new: true, upsert: true, setDefaultsOnInsert: true, runValidators: true }
+        );
         createdDeliveries.push(delivery);
         vendorSequence++;
         
