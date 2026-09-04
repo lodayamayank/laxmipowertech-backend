@@ -1,7 +1,7 @@
 # Material Module - Intent (PO) Creation Fix
 
 ## Issue Summary
-**Error:** `POST /api/material/purchase-orders` returns 500 Internal Server Error when creating an Intent (Purchase Order)
+**Error:** `POST /api/material/purchase-orders` returns 500 Internal Server Error when creating an Intent (Purchase Order).
 
 **Console Error:**
 ```
