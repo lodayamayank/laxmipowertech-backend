@@ -3,6 +3,8 @@ import express from "express";
 import Leave from "../models/Leave.js";
 import auth from "../middleware/authMiddleware.js";
 import Attendance from "../models/Attendance.js";
+import { upload, uploadToCloudinary } from "../middleware/cloudinaryMaterialMiddleware.js";
+import fs from "fs";
 import {
   resolveCapturedAt,
   findExistingByClientId,
@@ -12,14 +14,50 @@ import {
 
 const router = express.Router();
 
+const hasValidImageSignature = (filePath, mimetype) => {
+  const header = fs.readFileSync(filePath).subarray(0, 12);
+  if (mimetype === "image/jpeg") return header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  if (mimetype === "image/png") return header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (mimetype === "image/gif") return header.subarray(0, 6).toString("ascii").match(/^GIF8[79]a$/) !== null;
+  if (mimetype === "image/webp") return header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP";
+  return false;
+};
+
 // ✅ Request leave
-router.post("/", auth, async (req, res) => {
+router.post("/", auth, upload.single("proof"), async (req, res) => {
   try {
+    if (req.body.type === "sick" && !req.file) {
+      return res.status(400).json({ message: "Medical proof image is required for sick leave" });
+    }
+    if (req.file && !hasValidImageSignature(req.file.path, req.file.mimetype)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ message: "Only valid image files are allowed for medical proof" });
+    }
+
     // Offline replay: return the original request instead of filing a second one.
     const clientId = readClientId(req.body);
     const existing = await findExistingByClientId(Leave, clientId);
     if (existing) {
+      if (req.file?.path) {
+        fs.unlinkSync(req.file.path);
+      }
       return res.status(200).json({ ...existing.toObject(), duplicate: true });
+    }
+
+    let proofUrl;
+    if (req.file) {
+      const uploadedProof = await uploadToCloudinary(
+        req.file.path,
+        "laxmipowertech/leaves/proofs",
+        null,
+        {
+          resource_type: "image",
+          quality: "auto:eco",
+          fetch_format: "auto",
+          transformation: [{ width: 1600, height: 1600, crop: "limit" }],
+        }
+      );
+      proofUrl = uploadedProof.url;
     }
 
     const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
@@ -30,6 +68,7 @@ router.post("/", auth, async (req, res) => {
     const leave = new Leave({
       ...leaveFields,
       user: req.user.id,
+      ...(proofUrl ? { proofUrl } : {}),
       ...(clientId ? { clientId } : {}),
       capturedAt,
       syncedOffline: backdated,
