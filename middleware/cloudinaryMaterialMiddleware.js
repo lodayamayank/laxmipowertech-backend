@@ -20,9 +20,10 @@ const storage = multer.diskStorage({
 
 // File filter for images
 const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
+    const allowedExtensions = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
+    const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+    const extname = allowedExtensions.has(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedMimeTypes.has(file.mimetype.toLowerCase());
   
   if (mimetype && extname) {
     return cb(null, true);
@@ -45,11 +46,12 @@ export const upload = multer({
  * @param {String} publicId - Optional public ID for the file
  * @returns {Promise<Object>} - { url, publicId }
  */
-export const uploadToCloudinary = async (filePath, folder = 'material-transfer', publicId = null) => {
+export const uploadToCloudinary = async (filePath, folder = 'material-transfer', publicId = null, uploadOptions = {}) => {
   try {
     const options = {
       folder: folder,
-      resource_type: 'auto'
+      resource_type: 'auto',
+      ...uploadOptions,
     };
     
     if (publicId) {

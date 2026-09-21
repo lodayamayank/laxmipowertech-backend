@@ -265,13 +265,16 @@ router.get("/", authMiddleware, async (req, res) => {
     }
 
     // --- Final enrich ---
+    const branchIdToName= new Map(branches.map((b) => [b._id.toString(), b.name]));
     records = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split("T")[0];
-      const branchName = findBranchForPunch(
-        Number(r.lat),
-        Number(r.lng),
-        r.user?.assignedBranches || []
-      );
+      const branchName =
+        (r.branch && branchIdToName.get(r.branch.toString())) ||
+        findBranchForPunch(
+          Number(r.lat),
+          Number(r.lng),
+          r.user?.assignedBranches || []
+        );
       return {
         ...r,
         note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
