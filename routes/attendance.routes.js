@@ -9,6 +9,7 @@ import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
+import { findBranchForPunch } from "../utils/branchMatching.js";
 import AttendanceNote from '../models/AttendanceNote.js';
 import {
   resolveCapturedAt,
@@ -248,22 +249,6 @@ router.get("/", authMiddleware, async (req, res) => {
     // --- Branches ---
     const branches = await Branch.find().lean();
 
-    function findBranchForPunch(lat, lng, assignedBranchIds) {
-      if (!lat || !lng) return null;
-
-      const assigned = branches.filter((b) =>
-        assignedBranchIds?.some((id) => id.toString() === b._id.toString())
-      );
-
-      for (const b of assigned) {
-        const distance =
-          Math.sqrt(Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)) *
-          111000;
-        if (distance <= (b.radius || 500)) return b.name;
-      }
-      return null;
-    }
-
     // --- Final enrich ---
     const branchIdToName= new Map(branches.map((b) => [b._id.toString(), b.name]));
     records = records.map((r) => {
@@ -273,7 +258,8 @@ router.get("/", authMiddleware, async (req, res) => {
         findBranchForPunch(
           Number(r.lat),
           Number(r.lng),
-          r.user?.assignedBranches || []
+          r.user?.assignedBranches || [],
+          branches
         );
       return {
         ...r,
@@ -471,27 +457,9 @@ router.get('/live', authMiddleware, async (req, res) => {
 
     const users = await User.find(userQuery).populate('assignedBranches').lean();
 
-    // ✅ Load all branches from DB once
-    const Branch = (await import('../models/Branch.js')).default;
+    // ✅ Load all branches from DB once 
     const branches = await Branch.find().lean();
 
-    function findBranchForPunch(lat, lng, assignedBranchIds) {
-      if (!lat || !lng) return null;
-
-      const assigned = branches.filter((b) =>
-        assignedBranchIds.some((id) => id.toString() === b._id.toString())
-      );
-
-      for (const b of assigned) {
-        const distance =
-          Math.sqrt(Math.pow(lat - b.lat, 2) + Math.pow(lng - b.lng, 2)) *
-          111000; // meters
-        if (distance <= (b.radius || 500)) {
-          return b.name;
-        }
-      }
-      return null;
-    }
 
     const liveData = users.map((user) => {
       const records = attendanceToday.filter(
@@ -526,7 +494,8 @@ router.get('/live', authMiddleware, async (req, res) => {
           findBranchForPunch(
             Number(punchIn.lat),
             Number(punchIn.lng),
-            user.assignedBranches
+            user.assignedBranches || [],
+            branches
           ) || 'Outside Assigned Branch';
         selfieUrl = punchIn.selfieUrl;
       } else if (punchIn && punchOut) {
@@ -539,7 +508,8 @@ router.get('/live', authMiddleware, async (req, res) => {
           findBranchForPunch(
             Number(punchOut.lat),
             Number(punchOut.lng),
-            user.assignedBranches
+            user.assignedBranches || [],
+            branches
           ) || 'Outside Assigned Branch';
         selfieUrl = punchOut.selfieUrl;
       }
