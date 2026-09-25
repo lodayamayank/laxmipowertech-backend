@@ -1,8 +1,10 @@
 import express from 'express';
+import { randomInt } from 'node:crypto';
 import Attendance from '../models/Attendance.js';
 import authMiddleware from '../middleware/authMiddleware.js';
 import upload from '../config/multer.js';
 import User from '../models/User.js';
+import SupervisorAttendanceCode from '../models/SupervisorAttendanceCode.js';
 import mongoose from 'mongoose';
 import axios from 'axios'; //  For reverse geocoding
 import cloudinary from '../config/cloudinary.js';
@@ -20,6 +22,83 @@ import {
 
 const router = express.Router();
 
+const generateDailyCode = () => String(randomInt(100000, 1000000));
+
+const getServerDay = () => {
+  const now = new Date();
+
+  const indiaDateParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+
+  const year = Number(
+    indiaDateParts.find((part) => part.type === "year").value
+  );
+
+  const month = Number(
+    indiaDateParts.find((part) => part.type === "month").value
+  );
+
+  const day = Number(indiaDateParts.find((part) => part.type === "day").value);
+
+  // Midnight in India represented as a UTC Date.
+  // 00:00 IST = 18:30 UTC of the previous day.
+  return new Date(Date.UTC(year, month - 1, day) - 5.5 * 60 * 60 * 1000);
+};
+
+const formatDateKey = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const findOrCreateSupervisorCode = async (supervisorId, branchId, date) => {
+  // Remove codes from previous days.
+  await SupervisorAttendanceCode.deleteMany({
+    date: { $lt: date },
+  });
+
+  const query = {
+    supervisor: supervisorId,
+    branch: branchId,
+    date,
+  };
+
+  // Return today's existing code if it already exists.
+  const existing = await SupervisorAttendanceCode.findOne(query).lean();
+
+  if (existing) {
+    return existing;
+  }
+
+  // Create a code only when today's code does not exist.
+  try {
+    return await SupervisorAttendanceCode.create({
+      ...query,
+      code: generateDailyCode(),
+    });
+  } catch (error) {
+    // Another request may have created today's code at the same time.
+    if (error?.code !== 11000) {
+      throw error;
+    }
+
+    const createdByConcurrentRequest = await SupervisorAttendanceCode.findOne(
+      query
+    ).lean();
+
+    if (createdByConcurrentRequest) {
+      return createdByConcurrentRequest;
+    }
+
+    throw error;
+  }
+};
+
 // Admin must type this exact phrase to confirm a bulk delete. Kept in sync
 // with the matching literal in AdminDeleteAttendance.jsx on the frontend.
 const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
@@ -30,7 +109,9 @@ const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
 // version segment and extension stripped off.
 const extractCloudinaryPublicId = (url) => {
   if (!url || typeof url !== 'string') return null;
-  const match = url.match(/\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/);
+  const match = url.match(
+ /\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/
+  );
   return match ? match[1] : null;
 };
 
@@ -44,7 +125,10 @@ const resolveDeleteRange = (startDate, endDate) => {
   const rangeStart = new Date(startDate);
   rangeStart.setHours(0, 0, 0, 0);
 
-  const rangeEnd = endDate && !isNaN(new Date(endDate)) ? new Date(endDate) : new Date(startDate);
+  const rangeEnd =
+    endDate && !isNaN(new Date(endDate))
+      ? new Date(endDate)
+      : new Date(startDate);
   rangeEnd.setHours(23, 59, 59, 999);
 
   if (rangeEnd < rangeStart) {
@@ -144,6 +228,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
         lng: Number(lng),
         location,
         selfieUrl,
+        markedBy: 'Selfie',
         date: punchedAt,
         ...(clientId ? { clientId } : {}),
         syncedOffline: backdated,
@@ -169,6 +254,184 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
   }
 });
 
+// ✅ GET: Today's fallback attendance codes for the logged-in supervisor
+router.get("/supervisor-codes", authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== "supervisor") {
+      return res.status(403).json({
+        message: "Only supervisors can access attendance codes",
+      });
+    }
+
+    const supervisor = await User.findById(req.user.id)
+      .select("assignedBranches")
+      .populate("assignedBranches", "name")
+      .lean();
+
+    if (!supervisor) {
+      return res.status(404).json({ message: "Supervisor not found" });
+    }
+
+    const assignedBranches = supervisor.assignedBranches || [];
+    if (!assignedBranches.length) {
+      return res.json({ codes: [] });
+    }
+
+    const today = getServerDay();
+    const dateKey = formatDateKey(today);
+    const codes = await Promise.all(
+      assignedBranches.map(async (branch) => {
+        const branchId = branch._id || branch;
+        const record = await findOrCreateSupervisorCode(
+          req.user.id,
+          branchId,
+          today
+        );
+
+        return {
+          branchId: branchId.toString(),
+          branchName: branch.name || "",
+          code: record.code,
+          date: dateKey,
+        };
+      })
+    );
+
+    return res.json({ codes });
+  } catch (error) {
+    console.error("Supervisor attendance codes error:", error);
+    return res
+      .status(500)
+      .json({ message: "Failed to retrieve attendance codes" });
+  }
+});
+
+// ✅ POST: Attendance punch using a supervisor's daily fallback code
+router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req, res) => {
+  console.log("🔥 HIT /api/attendance/supervisor-code-punch");
+
+  try {
+    const { code, punchType, lat, lng } = req.body || {};
+
+    if (!["in", "out"].includes(punchType)) {
+      return res.status(400).json({ message: "Invalid or missing punch type" });
+    }
+
+    if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: "Code must be a 6-digit number" });
+    }
+
+    if (
+      lat === undefined ||
+      lat === null ||
+      lat === "" ||
+      lng === undefined ||
+      lng === null ||
+      lng === ""
+    ) {
+      return res.status(400).json({ message: "Location is required" });
+    }
+
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return res.status(400).json({ message: "Invalid location coordinates" });
+    }
+
+    const user = await User.findById(req.user.id)
+      .select("assignedBranches")
+      .populate("assignedBranches");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const assignedBranches = user.assignedBranches || [];
+
+    const branches = await Branch.find().lean();
+
+    const detectedBranchName = findBranchForPunch(
+      latitude,
+      longitude,
+      assignedBranches,
+      branches
+    );
+    const assignedBranchIds = new Set(
+      assignedBranches.map((branch) => (branch._id || branch).toString())
+    );
+    const detectedBranch = branches.find(
+      (branch) =>
+        branch.name === detectedBranchName &&
+        assignedBranchIds.has(branch._id.toString())
+    );
+
+    console.log("Supervisor code punch details:", {
+      userId: req.user.id,
+      detectedBranch: detectedBranch
+        ? { id: detectedBranch._id.toString(), name: detectedBranch.name }
+        : null,
+      punchType,
+    });
+
+    if (!detectedBranch) {
+      return res.status(400).json({
+        message: "You are outside your assigned branch.",
+      });
+    }
+
+    const today = getServerDay();
+    const matchingCode = await SupervisorAttendanceCode.findOne({
+      branch: detectedBranch._id,
+      date: today,
+      code,
+    })
+    .populate("supervisor", "name username")
+    .lean();  
+
+    console.log("Supervisor attendance code matched:", Boolean(matchingCode));
+
+    if (!matchingCode) {
+      return res.status(400).json({
+        message: "Invalid or expired supervisor code.",
+      });
+    }
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const existingAttendance = await Attendance.findOne({
+      user: req.user.id,
+      punchType,
+      date: { $gte: today, $lt: tomorrow },
+    }).lean();
+
+    if (existingAttendance) {
+      return res.status(400).json({
+        message: `Punch ${punchType} has already been recorded today.`,
+      });
+    }
+
+    const attendance = await Attendance.create({
+      user: req.user.id,
+      punchType,
+      lat: latitude,
+      lng: longitude,
+      branch: detectedBranch._id,
+      date: new Date(),
+      selfieUrl: null,
+      markedBy: `Marked by Supervisor code - ${
+      matchingCode.supervisor?.name || matchingCode.supervisor?.username || "Supervisor"
+      }`,
+    });
+
+    return res.status(201).json({
+      message: "Attendance recorded using supervisor code",
+      attendance,
+    });
+  } catch (error) {
+    console.error("Supervisor code punch error:", error);
+    return res.status(500).json({ message: "Failed to record attendance" });
+  }
+});
 
 // ✅ GET: My Attendance History (Punches + Leaves)
 // ✅ GET: My Attendance History (with leave info)
@@ -250,7 +513,9 @@ router.get("/", authMiddleware, async (req, res) => {
     const branches = await Branch.find().lean();
 
     // --- Final enrich ---
-    const branchIdToName= new Map(branches.map((b) => [b._id.toString(), b.name]));
+    const branchIdToName = new Map(
+      branches.map((b) => [b._id.toString(), b.name])
+    );
     records = records.map((r) => {
       const dateKey = new Date(r.createdAt).toISOString().split("T")[0];
       const branchName =
@@ -353,8 +618,12 @@ router.get('/summary', authMiddleware, async (req, res) => {
         }
 
         // ✅ Check for present/absent
-        const ins = punchesToday.filter((p) => p.punchType === "in").map((x) => new Date(x.createdAt));
-        const outs = punchesToday.filter((p) => p.punchType === "out").map((x) => new Date(x.createdAt));
+        const ins = punchesToday
+          .filter((p) => p.punchType === "in")
+          .map((x) => new Date(x.createdAt));
+        const outs = punchesToday
+          .filter((p) => p.punchType === "out")
+          .map((x) => new Date(x.createdAt));
 
         if (!ins.length && !outs.length) {
           absent++;
@@ -398,16 +667,8 @@ router.get('/summary', authMiddleware, async (req, res) => {
   }
 });
 
-
-
-
-
-
-
-
-
 // ✅ GET: Is User Already Punched In/Out Today?
-router.get('/today', authMiddleware, async (req, res) => {
+router.get("/today", authMiddleware, async (req, res) => {
   try {
     const startOfDay = new Date();
     startOfDay.setHours(0, 0, 0, 0);
@@ -417,19 +678,18 @@ router.get('/today', authMiddleware, async (req, res) => {
       createdAt: { $gte: startOfDay },
     });
 
-    const punchedIn = records.some((r) => r.punchType === 'in');
-    const punchedOut = records.some((r) => r.punchType === 'out');
+    const punchedIn = records.some((r) => r.punchType === "in");
+    const punchedOut = records.some((r) => r.punchType === "out");
 
     res.json({ punchedIn, punchedOut });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to fetch today\'s attendance' });
+    res.status(500).json({ message: "Failed to fetch today's attendance" });
   }
 });
 
 // ✅ GET: Live Dashboard Attendance (Admin)
-// ✅ GET: Live Dashboard Attendance (Admin)
-router.get('/live', authMiddleware, async (req, res) => {
+router.get("/live", authMiddleware, async (req, res) => {
   try {
     const { project, role, branch } = req.query;
 
@@ -441,7 +701,7 @@ router.get('/live', authMiddleware, async (req, res) => {
     // Get all attendance records for today
     const attendanceToday = await Attendance.find({
       createdAt: { $gte: startOfDay, $lte: endOfDay },
-    }).populate('user');
+    }).populate("user");
 
     // Also fetch today's approved leaves
     const leavesToday = await Leave.find({
@@ -453,30 +713,32 @@ router.get('/live', authMiddleware, async (req, res) => {
     const userQuery = {};
     if (project) userQuery.project = project;
     if (role) userQuery.role = role;
-    if (branch) userQuery.assignedBranches = new mongoose.Types.ObjectId(branch);
+    if (branch)
+      userQuery.assignedBranches = new mongoose.Types.ObjectId(branch);
 
-    const users = await User.find(userQuery).populate('assignedBranches').lean();
+    const users = await User.find(userQuery)
+      .populate("assignedBranches")
+      .lean();
 
-    // ✅ Load all branches from DB once 
+    // ✅ Load all branches from DB once
     const branches = await Branch.find().lean();
-
 
     const liveData = users.map((user) => {
       const records = attendanceToday.filter(
         (a) => a.user._id.toString() === user._id.toString()
       );
 
-      const punchIn = records.find((r) => r.punchType === 'in');
-      const punchOut = records.find((r) => r.punchType === 'out');
+      const punchIn = records.find((r) => r.punchType === "in");
+      const punchOut = records.find((r) => r.punchType === "out");
 
       // ✅ Check leave record
       const leaveToday = leavesToday.find(
         (l) => l.user._id.toString() === user._id.toString()
       );
 
-      let status = 'no_punch';
+      let status = "no_punch";
       let punchTime = null;
-      let branchName = 'Outside Assigned Branch';
+      let branchName = "Outside Assigned Branch";
       let selfieUrl = null;
 
       if (leaveToday) {
@@ -485,10 +747,10 @@ router.get('/live', authMiddleware, async (req, res) => {
         branchName = "On Leave";
         selfieUrl = null;
       } else if (punchIn && !punchOut) {
-        status = 'in';
-        punchTime = new Date(punchIn.createdAt).toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
+        status = "in";
+        punchTime = new Date(punchIn.createdAt).toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
         });
         branchName =
           findBranchForPunch(
@@ -518,7 +780,7 @@ router.get('/live', authMiddleware, async (req, res) => {
         _id: user._id,
         name: user.name,
         role: user.role,
-        status,       // can be "in" / "out" / "paidleave" / "unpaidleave" / "no_punch"
+        status, // can be "in" / "out" / "paidleave" / "unpaidleave" / "no_punch"
         punchTime,
         branch: branchName,
         selfieUrl,
@@ -533,16 +795,15 @@ router.get('/live', authMiddleware, async (req, res) => {
   }
 });
 
-
 // ✅ POST: Bulk Attendance (for Labour Management)
-router.post('/bulk', authMiddleware, async (req, res) => {
-  console.log('🔥 HIT /api/attendance/bulk route');
-  console.log('📦 Request body:', req.body);
+router.post("/bulk", authMiddleware, async (req, res) => {
+  console.log("🔥 HIT /api/attendance/bulk route");
+  console.log("📦 Request body:", req.body);
   try {
     const { records } = req.body;
 
     if (!Array.isArray(records) || records.length === 0) {
-      return res.status(400).json({ message: 'Records array is required' });
+      return res.status(400).json({ message: "Records array is required" });
     }
 
     const results = [];
@@ -552,38 +813,53 @@ router.post('/bulk', authMiddleware, async (req, res) => {
       const { user, branch, status, date, punchTime } = record;
 
       if (!user || !status || !date) {
-        errors.push({ user, message: 'Missing required fields' });
+        errors.push({ user, message: "Missing required fields" });
         continue;
       }
 
       try {
         // in/out records are separate per direction; absent/present/half-day are one record per day
-        const startOfDay = new Date(date + 'T00:00:00.000Z');
-        const endOfDay   = new Date(date + 'T23:59:59.999Z');
-        const dateRange  = { $gte: startOfDay, $lte: endOfDay };
+        const startOfDay = new Date(date + "T00:00:00.000Z");
+        const endOfDay = new Date(date + "T23:59:59.999Z");
+        const dateRange = { $gte: startOfDay, $lte: endOfDay };
 
         // Guard: punch-out requires an existing punch-in on the same day
-        if (status === 'out') {
-          const hasIn = await Attendance.findOne({ user, date: dateRange, punchType: 'in' }).lean();
+        if (status === "out") {
+          const hasIn = await Attendance.findOne({
+            user,
+            date: dateRange,
+            punchType: "in",
+          }).lean();
           if (!hasIn) {
-            errors.push({ user, message: 'Cannot punch out without a punch in record for this date' });
+            errors.push({
+              user,
+              message:
+                "Cannot punch out without a punch in record for this date",
+            });
             continue;
           }
           // Also validate punch-out time is after punch-in time
           if (punchTime && hasIn) {
-            const inTime  = new Date(hasIn.punchTime || hasIn.createdAt);
+            const inTime = new Date(hasIn.punchTime || hasIn.createdAt);
             const outTime = new Date(punchTime);
             if (outTime <= inTime) {
-              errors.push({ user, message: 'Punch out time must be after punch in time' });
+              errors.push({
+                user,
+                message: "Punch out time must be after punch in time",
+              });
               continue;
             }
           }
         }
 
-        const isPunchDirection = status === 'in' || status === 'out';
+        const isPunchDirection = status === "in" || status === "out";
         const query = isPunchDirection
           ? { user, date: dateRange, punchType: status }
-          : { user, date: dateRange, punchType: { $in: ['absent', 'present', 'half-day', 'half'] } };
+          : {
+              user,
+              date: dateRange,
+              punchType: { $in: ["absent", "present", "half-day", "half"] },
+            };
 
         const existing = await Attendance.findOne(query);
         const resolvedPunchTime = punchTime ? new Date(punchTime) : undefined;
@@ -615,36 +891,38 @@ router.post('/bulk', authMiddleware, async (req, res) => {
 
     if (errors.length > 0) {
       return res.status(207).json({
-        message: 'Partial success',
+        message: "Partial success",
         results,
-        errors
+        errors,
       });
     }
 
     res.status(201).json({
-      message: 'Attendance marked successfully',
-      results
+      message: "Attendance marked successfully",
+      results,
     });
   } catch (err) {
-    console.error('Bulk attendance error:', err);
-    res.status(500).json({ message: 'Failed to mark attendance', error: err.message });
+    console.error("Bulk attendance error:", err);
+    res
+      .status(500)
+      .json({ message: "Failed to mark attendance", error: err.message });
   }
 });
 
 // ✅ GET: Fetch attendance by branch and date (for Labour Management)
-router.get('/by-date', authMiddleware, async (req, res) => {
-  console.log('🔥 HIT /api/attendance/by-date route');
-  console.log('📦 Query params:', req.query);
+router.get("/by-date", authMiddleware, async (req, res) => {
+  console.log("🔥 HIT /api/attendance/by-date route");
+  console.log("📦 Query params:", req.query);
   try {
     const { branch, date } = req.query;
 
     if (!date) {
-      return res.status(400).json({ message: 'Date is required' });
+      return res.status(400).json({ message: "Date is required" });
     }
 
     // Use a full-day UTC range so records stored at any time within the day are matched
-    const startOfDay = new Date(date + 'T00:00:00.000Z');
-    const endOfDay   = new Date(date + 'T23:59:59.999Z');
+    const startOfDay = new Date(date + "T00:00:00.000Z");
+    const endOfDay = new Date(date + "T23:59:59.999Z");
 
     const query = {
       date: { $gte: startOfDay, $lte: endOfDay },
@@ -655,30 +933,32 @@ router.get('/by-date', authMiddleware, async (req, res) => {
     }
 
     const attendance = await Attendance.find(query)
-      .populate('user', 'name username mobileNumber jobTitle role')
+      .populate("user", "name username mobileNumber jobTitle role")
       .lean();
 
     res.json(attendance);
   } catch (err) {
-    console.error('Fetch attendance by date error:', err);
-    res.status(500).json({ message: 'Failed to fetch attendance', error: err.message });
+    console.error("Fetch attendance by date error:", err);
+    res
+      .status(500)
+      .json({ message: "Failed to fetch attendance", error: err.message });
   }
 });
 
 // ✅ GET note for user+date
-router.get('/notes/:userId/:date', authMiddleware, async (req, res) => {
+router.get("/notes/:userId/:date", authMiddleware, async (req, res) => {
   try {
     const { userId, date } = req.params;
     const note = await AttendanceNote.findOne({ userId, date });
-    res.json(note || { note: '' });
+    res.json(note || { note: "" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to fetch note' });
+    res.status(500).json({ message: "Failed to fetch note" });
   }
 });
 
 // ✅ POST/UPDATE note
-router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
+router.post("/notes/:userId/:date", authMiddleware, async (req, res) => {
   try {
     const { userId, date } = req.params;
     const { note } = req.body;
@@ -692,17 +972,18 @@ router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
     res.json(updated);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to save note' });
+    res.status(500).json({ message: "Failed to save note" });
   }
 });
 
-
 // ✅ GET: Preview how many attendance records a date/date-range delete would affect
 // (Admin) — used to populate the confirmation screen before a bulk delete.
-router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
+router.get("/admin/delete-preview", authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Only admins can perform this action' });
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ message: "Only admins can perform this action" });
     }
 
     const { startDate, endDate } = req.query;
@@ -716,7 +997,7 @@ router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
     const count = await Attendance.countDocuments(query);
     const withSelfies = await Attendance.countDocuments({
       ...query,
-      selfieUrl: { $nin: [null, ''] },
+      selfieUrl: { $nin: [null, ""] },
     });
 
     res.json({
@@ -726,8 +1007,11 @@ router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
       endDate: rangeEnd.toISOString(),
     });
   } catch (err) {
-    console.error('Delete preview error:', err);
-    res.status(500).json({ message: 'Failed to preview attendance records', error: err.message });
+    console.error("Delete preview error:", err);
+    res.status(500).json({
+      message: "Failed to preview attendance records",
+      error: err.message,
+    });
   }
 });
 
@@ -736,10 +1020,12 @@ router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
 // or both — via deleteFromDatabase / deleteFromCloudinary. Requires the admin to
 // have typed the exact confirmation phrase, checked again here in case this is
 // called directly.
-router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
+router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Only admins can perform this action' });
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ message: "Only admins can perform this action" });
     }
 
     const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary } = req.body;
@@ -818,14 +1104,16 @@ router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
     }
 
     console.log(
-      `🗑️  Admin ${req.user.email || req.user.id} bulk-deleted attendance for ` +
+      `🗑️  Admin ${
+        req.user.email || req.user.id
+      } bulk-deleted attendance for ` +
         `${rangeStart.toISOString()} to ${rangeEnd.toISOString()} ` +
         `(database=${!!deleteFromDatabase}, cloudinary=${!!deleteFromCloudinary}, ` +
         `deletedCount=${deletedCount}, cloudinaryDeleted=${cloudinaryDeleted})`
     );
 
     res.json({
-      message: 'Attendance records processed successfully',
+      message: "Attendance records processed successfully",
       deletedCount,
       cloudinaryDeleted,
       cloudinaryFailed,
@@ -835,8 +1123,11 @@ router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
       endDate: rangeEnd.toISOString(),
     });
   } catch (err) {
-    console.error('Bulk delete attendance error:', err);
-    res.status(500).json({ message: 'Failed to delete attendance records', error: err.message });
+    console.error("Bulk delete attendance error:", err);
+    res.status(500).json({
+      message: "Failed to delete attendance records",
+      error: err.message,
+    });
   }
 });
 
