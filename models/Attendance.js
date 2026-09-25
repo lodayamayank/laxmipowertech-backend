@@ -26,6 +26,7 @@ const attendanceSchema = new mongoose.Schema(
     lat: String,
     lng: String,
     selfieUrl: String,
+     markedBy: String,
     branch: { type: mongoose.Schema.Types.ObjectId, ref: "Branch" },
 
     // Supervisor-set punch time (overrides createdAt for salary calculation)
