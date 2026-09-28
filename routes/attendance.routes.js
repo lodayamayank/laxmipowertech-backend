@@ -11,7 +11,10 @@ import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
-import { findBranchForPunch } from "../utils/branchMatching.js";
+import {
+  findBranchForPunch,
+  findNearestAssignedBranch,
+} from "../utils/branchMatching.js";
 import AttendanceNote from '../models/AttendanceNote.js';
 import {
   resolveCapturedAt,
@@ -254,7 +257,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
   }
 });
 
-// ✅ GET: Today's fallback attendance codes for the logged-in supervisor
+// ✅ GET: Today's fallback attendance code for the logged-in supervisor
 router.get("/supervisor-codes", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "supervisor") {
@@ -263,9 +266,35 @@ router.get("/supervisor-codes", authMiddleware, async (req, res) => {
       });
     }
 
+    const { lat, lng } = req.query || {};
+
+    if (
+      lat === undefined ||
+      lat === null ||
+      lat === "" ||
+      lng === undefined ||
+      lng === null ||
+      lng === ""
+    ) {
+      return res.status(400).json({
+        message: "Valid location is required",
+        codes: [],
+      });
+    }
+
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return res.status(400).json({
+        message: "Invalid location coordinates",
+        codes: [],
+      });
+    }
+
     const supervisor = await User.findById(req.user.id)
       .select("assignedBranches")
-      .populate("assignedBranches", "name")
+      .populate("assignedBranches", "name lat lng radius")
       .lean();
 
     if (!supervisor) {
@@ -277,27 +306,38 @@ router.get("/supervisor-codes", authMiddleware, async (req, res) => {
       return res.json({ codes: [] });
     }
 
-    const today = getServerDay();
-    const dateKey = formatDateKey(today);
-    const codes = await Promise.all(
-      assignedBranches.map(async (branch) => {
-        const branchId = branch._id || branch;
-        const record = await findOrCreateSupervisorCode(
-          req.user.id,
-          branchId,
-          today
-        );
-
-        return {
-          branchId: branchId.toString(),
-          branchName: branch.name || "",
-          code: record.code,
-          date: dateKey,
-        };
-      })
+    const matchedBranch = findNearestAssignedBranch(
+      latitude,
+      longitude,
+      assignedBranches,
+      assignedBranches
     );
 
-    return res.json({ codes });
+    if (!matchedBranch) {
+      return res.status(403).json({
+        message: "You are not within any of your assigned branch locations.",
+        codes: [],
+      });
+    }
+
+    const today = getServerDay();
+    const dateKey = formatDateKey(today);
+    const record = await findOrCreateSupervisorCode(
+      req.user.id,
+      matchedBranch._id,
+      today
+    );
+
+    return res.json({
+      codes: [
+        {
+          branchId: matchedBranch._id.toString(),
+          branchName: matchedBranch.name || "",
+          code: record.code,
+          date: dateKey,
+        },
+      ],
+    });
   } catch (error) {
     console.error("Supervisor attendance codes error:", error);
     return res
@@ -350,19 +390,11 @@ router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req,
 
     const branches = await Branch.find().lean();
 
-    const detectedBranchName = findBranchForPunch(
+    const detectedBranch = findNearestAssignedBranch(
       latitude,
       longitude,
       assignedBranches,
       branches
-    );
-    const assignedBranchIds = new Set(
-      assignedBranches.map((branch) => (branch._id || branch).toString())
-    );
-    const detectedBranch = branches.find(
-      (branch) =>
-        branch.name === detectedBranchName &&
-        assignedBranchIds.has(branch._id.toString())
     );
 
     console.log("Supervisor code punch details:", {
@@ -371,7 +403,7 @@ router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req,
         ? { id: detectedBranch._id.toString(), name: detectedBranch.name }
         : null,
       punchType,
-    });
+    });;
 
     if (!detectedBranch) {
       return res.status(400).json({

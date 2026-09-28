@@ -40,6 +40,59 @@ export const findBranchForPunch = (
   return null;
 };
 
+export const findNearestAssignedBranch = (
+  lat,
+  lng,
+  assignedBranchRefs,
+  branches
+) => {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+
+  const assignedIds = new Set(
+    (assignedBranchRefs || [])
+      .map(toBranchId)
+      .filter(Boolean)
+  );
+
+  const assigned = (branches || []).filter((branch) =>
+    assignedIds.has(branch._id.toString())
+  );
+
+  let nearestBranch = null;
+  let minDistance = Infinity;
+
+  for (const branch of assigned) {
+    if (
+      !Number.isFinite(Number(branch.lat)) ||
+      !Number.isFinite(Number(branch.lng))
+    ) {
+      continue;
+    }
+
+    const radius = Number(branch.radius);
+    const allowedRadius =
+      Number.isFinite(radius) && radius > 0
+        ? radius
+        : 500;
+
+    const distance = haversineMeters(
+      lat,
+      lng,
+      Number(branch.lat),
+      Number(branch.lng)
+    );
+
+    if (distance <= allowedRadius && distance < minDistance) {
+      minDistance = distance;
+      nearestBranch = branch;
+    }
+  }
+
+  return nearestBranch;
+};
+
 const haversineMeters = (lat1, lng1, lat2, lng2) => {
   const R = 6371000;
 
