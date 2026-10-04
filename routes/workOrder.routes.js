@@ -65,6 +65,31 @@ router.get('/', auth, async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to fetch work orders', error: err.message });
   }
 });
+// GET /api/work-orders/retention-notifications
+router.get('/retention-notifications', auth, async (req, res) => {
+  try {
+    const endOfToday = new Date();
+    endOfToday.setHours(23, 59, 59, 999);
+
+    const orders = await WorkOrder.find({
+      isTriggered: true,
+      retentionAmount: { $gt: 0 },
+      retentionDueDate: { $ne: null },
+      $or: [
+        { retentionReminderDate: { $lte: endOfToday } },
+        { retentionReminderDate: null, retentionDueDate: { $lte: endOfToday } },
+      ],
+    })
+      .select('workOrderNo project isTriggered retentionAmount retentionDueDate retentionReminderDate')
+      .populate('project', 'name')
+      .lean();
+
+    res.json({ success: true, data: orders });
+  } catch (err) {
+    console.error('Error fetching retention notifications:', err);
+    res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
+  }
+});
 
 // GET /api/work-orders/:id — Get single work order
 router.get('/:id', auth, async (req, res) => {

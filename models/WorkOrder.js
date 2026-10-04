@@ -86,6 +86,7 @@ const workOrderSchema = new mongoose.Schema({
 
 workOrderSchema.index({ project: 1, createdAt: -1 });
 workOrderSchema.index({ workOrderNo: 1, project: 1 }, { unique: true });
-workOrderSchema.index({ retentionReminderDate: 1, isTriggered: 1 });
+//workOrderSchema.index({ retentionReminderDate: 1, isTriggered: 1 });
+workOrderSchema.index({ isTriggered: 1, retentionReminderDate: 1 });
 
 export default mongoose.model('WorkOrder', workOrderSchema);

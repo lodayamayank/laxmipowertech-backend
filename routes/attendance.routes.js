@@ -579,13 +579,47 @@ router.get("/", authMiddleware, async (req, res) => {
 // ✅ GET: Attendance Summary (Aggregated per User)
 router.get('/summary', authMiddleware, async (req, res) => {
   try {
-    let { project, role, month, year } = req.query;
+    const { project, role, month, year, startDate: requestedStart, endDate: requestedEnd } = req.query;
+    const hasDateRange = requestedStart !== undefined || requestedEnd !== undefined;
+    let startDate;
+    let endDateExclusive;
+    let days;
 
-    const monthNum = parseInt(month) || new Date().getMonth() + 1;
-    const yearNum = parseInt(year) || new Date().getFullYear();
+    if (hasDateRange) {
+      const parseDateOnly = (value) => {
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const parsed = new Date(`${value}T00:00:00.000Z`);
+        return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+          ? parsed
+          : null;
+      };
 
-    const startDate = new Date(yearNum, monthNum - 1, 1);
-    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
+      startDate = parseDateOnly(requestedStart);
+      const inclusiveEnd = parseDateOnly(requestedEnd);
+      if (!startDate || !inclusiveEnd) {
+        return res.status(400).json({ message: 'Valid startDate and endDate in YYYY-MM-DD format are required' });
+      }
+      if (startDate > inclusiveEnd) {
+        return res.status(400).json({ message: 'startDate cannot be after endDate' });
+      }
+
+      endDateExclusive = new Date(inclusiveEnd);
+      endDateExclusive.setUTCDate(endDateExclusive.getUTCDate() + 1);
+      days = [];
+      for (let day = new Date(startDate); day < endDateExclusive; day.setUTCDate(day.getUTCDate() + 1)) {
+        days.push({ key: day.toISOString().split('T')[0] });
+      }
+    } else {
+      const monthNum = parseInt(month) || new Date().getMonth() + 1;
+      const yearNum = parseInt(year) || new Date().getFullYear();
+
+      startDate = new Date(yearNum, monthNum - 1, 1);
+      endDateExclusive = new Date(yearNum, monthNum, 1);
+      days = Array.from({ length: new Date(yearNum, monthNum, 0).getDate() }, (_, index) => {
+        const day = new Date(yearNum, monthNum - 1, index + 1);
+        return { key: day.toISOString().split('T')[0] };
+      });
+    }
 
     // Fetch users by role/project
     const userQuery = {};
@@ -598,10 +632,10 @@ router.get('/summary', authMiddleware, async (req, res) => {
     const results = [];
 
     for (const u of users) {
-      // Fetch attendance for the user in this month
+      // Fetch attendance only within the requested calendar-day range.
       const punches = await Attendance.find({
         user: u._id,
-        date: { $gte: startDate, $lte: endDate },   // ✅ use date, not createdAt
+        date: { $gte: startDate, $lt: endDateExclusive },
       })
         .populate("leaveId", "type")                // ✅ populate leaveId
         .lean();
@@ -625,11 +659,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
         sickLeave = 0,
         casualLeave = 0;
 
-      const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
-      for (let day = 1; day <= daysInMonth; day++) {
-        const d = new Date(yearNum, monthNum - 1, day);
-        const key = d.toISOString().split("T")[0];
-        const dow = d.getDay();
+      for (const { key } of days) {
 
         const punchesToday = byDay[key] || [];
 
