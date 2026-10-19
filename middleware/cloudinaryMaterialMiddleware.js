@@ -1,199 +1,52 @@
+// Compatibility names retained for existing material routes; uploads now use disk.
 import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-import cloudinary from '../config/cloudinary.js';
+import path from 'node:path';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { fileUrl } from '../config/multer.js';
 
-// Configure multer for temporary storage
+const MIME_BY_EXT = {
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.pdf': 'application/pdf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+};
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const tmpDir = 'tmp_uploads';
-    if (!fs.existsSync(tmpDir)) {
-      fs.mkdirSync(tmpDir, { recursive: true });
-    }
-    cb(null, tmpDir);
+  destination: (_req, _file, cb) => {
+    fs.mkdirSync('tmp-uploads', { recursive: true });
+    cb(null, 'tmp-uploads');
   },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, 'material-' + uniqueSuffix + path.extname(file.originalname));
-  }
+  filename: (_req, file, cb) => cb(null, `material-${Date.now()}-${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`),
 });
-
-// File filter for images
-const fileFilter = (req, file, cb) => {
-    const allowedExtensions = new Set(['.jpeg', '.jpg', '.png', '.gif', '.webp']);
-    const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
-    const extname = allowedExtensions.has(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedMimeTypes.has(file.mimetype.toLowerCase());
-  
-  if (mimetype && extname) {
-    return cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed!'));
-  }
-};
-
-// Multer upload configuration
-export const upload = multer({
-  storage: storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
-  fileFilter: fileFilter
+// No file deletion, including when multer rejects a partially processed upload.
+storage._removeFile = (_req, _file, cb) => cb(null);
+export const upload = multer({ storage, limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const expected = MIME_BY_EXT[path.extname(file.originalname).toLowerCase()];
+    if (expected && expected === file.mimetype) return cb(null, true);
+    cb(new Error('Unsupported file type'));
+  },
 });
-
-/**
- * Upload a single file to Cloudinary
- * @param {String} filePath - Path to the temporary file
- * @param {String} folder - Cloudinary folder name (e.g., 'material-transfer/indents')
- * @param {String} publicId - Optional public ID for the file
- * @returns {Promise<Object>} - { url, publicId }
- */
-export const uploadToCloudinary = async (filePath, folder = 'material-transfer', publicId = null, uploadOptions = {}) => {
-  try {
-    const options = {
-      folder: folder,
-      resource_type: 'auto',
-      ...uploadOptions,
-    };
-    
-    if (publicId) {
-      options.public_id = publicId;
-    }
-    
-    const result = await cloudinary.uploader.upload(filePath, options);
-    
-    // Clean up temp file
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    
-    return {
-      url: result.secure_url,
-      publicId: result.public_id
-    };
-  } catch (error) {
-    // Clean up temp file on error
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    throw new Error(`Cloudinary upload failed: ${error.message}`);
-  }
+export const uploadToCloudinary = async (filePath, folder = 'material-transfer/indents') => {
+  if (!/^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/.test(folder)) throw new Error('Invalid upload folder');
+  const ext = path.extname(filePath).toLowerCase();
+  if (!MIME_BY_EXT[ext]) throw new Error('Unsupported file type');
+  const date = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  const relPath = path.posix.join(folder, ...date.split('-'), `file_${Date.now()}-${crypto.randomBytes(8).toString('hex')}${ext}`);
+  const destination = path.resolve('uploads', relPath);
+  await fs.promises.mkdir(path.dirname(destination), { recursive: true });
+  // Copy only: the source temp file and the stored file are both retained.
+  await fs.promises.copyFile(filePath, destination, fs.constants.COPYFILE_EXCL);
+  const stat = await fs.promises.stat(destination);
+  const url = fileUrl({ path: destination });
+  return { url, secure_url: url, publicId: relPath, public_id: relPath,
+    originalName: path.basename(filePath), format: ext.slice(1), bytes: stat.size,
+    resource_type: MIME_BY_EXT[ext].startsWith('image/') ? 'image' : 'raw' };
 };
-
-/**
- * Upload multiple files to Cloudinary
- * @param {Array} files - Array of file objects with path property
- * @param {String} folder - Cloudinary folder name
- * @returns {Promise<Array>} - Array of { url, publicId }
- */
-export const uploadMultipleToCloudinary = async (files, folder = 'material-transfer') => {
-  try {
-    const uploadPromises = files.map(file => 
-      uploadToCloudinary(file.path, folder)
-    );
-    return await Promise.all(uploadPromises);
-  } catch (error) {
-    throw new Error(`Multiple file upload failed: ${error.message}`);
-  }
-};
-
-/**
- * Delete a file from Cloudinary using public_id
- * @param {String} publicId - The Cloudinary public_id of the file
- * @returns {Promise<Object>} - Deletion result
- */
-export const deleteFromCloudinary = async (publicId) => {
-  try {
-    if (!publicId) {
-      throw new Error('Public ID is required for deletion');
-    }
-    
-    const result = await cloudinary.uploader.destroy(publicId, {
-      resource_type: 'image'
-    });
-    
-    return result;
-  } catch (error) {
-    throw new Error(`Cloudinary deletion failed: ${error.message}`);
-  }
-};
-
-/**
- * Delete multiple files from Cloudinary
- * @param {Array} publicIds - Array of Cloudinary public_ids
- * @returns {Promise<Array>} - Array of deletion results
- */
-export const deleteMultipleFromCloudinary = async (publicIds) => {
-  try {
-    const deletePromises = publicIds
-      .filter(id => id) // Filter out null/undefined values
-      .map(id => deleteFromCloudinary(id));
-    return await Promise.all(deletePromises);
-  } catch (error) {
-    throw new Error(`Multiple file deletion failed: ${error.message}`);
-  }
-};
-
-/**
- * Extract public_id from Cloudinary URL
- * @param {String} url - Cloudinary URL
- * @returns {String} - Public ID
- */
-export const extractPublicId = (url) => {
-  if (!url || typeof url !== 'string') return null;
-  
-  try {
-    // Extract public_id from Cloudinary URL
-    // Example: https://res.cloudinary.com/demo/image/upload/v1234567890/material-transfer/file.jpg
-    const parts = url.split('/');
-    const uploadIndex = parts.indexOf('upload');
-    
-    if (uploadIndex === -1) return null;
-    
-    // Get everything after /upload/ (skip version if present)
-    let publicIdParts = parts.slice(uploadIndex + 1);
-    
-    // Remove version number if present (starts with 'v' followed by numbers)
-    if (publicIdParts[0] && publicIdParts[0].match(/^v\d+$/)) {
-      publicIdParts = publicIdParts.slice(1);
-    }
-    
-    // Join the remaining parts and remove extension
-    const fullPath = publicIdParts.join('/');
-    const publicId = fullPath.replace(/\.[^/.]+$/, ''); // Remove file extension
-    
-    return publicId;
-  } catch (error) {
-    console.error('Error extracting public_id:', error);
-    return null;
-  }
-};
-
-/**
- * Replace an existing image in Cloudinary
- * @param {String} oldPublicId - The public_id of the old image to delete
- * @param {String} newFilePath - Path to the new temporary file
- * @param {String} folder - Cloudinary folder name
- * @returns {Promise<Object>} - { url, publicId }
- */
-export const replaceInCloudinary = async (oldPublicId, newFilePath, folder = 'material-transfer') => {
-  try {
-    // Delete old image if it exists
-    if (oldPublicId) {
-      await deleteFromCloudinary(oldPublicId);
-    }
-    
-    // Upload new image
-    return await uploadToCloudinary(newFilePath, folder);
-  } catch (error) {
-    throw new Error(`Image replacement failed: ${error.message}`);
-  }
-};
-
-export default {
-  upload,
-  uploadToCloudinary,
-  uploadMultipleToCloudinary,
-  deleteFromCloudinary,
-  deleteMultipleFromCloudinary,
-  extractPublicId,
-  replaceInCloudinary
-};
+export const uploadMultipleToCloudinary = (files, folder) =>
+  Promise.all(files.map(file => uploadToCloudinary(file.path, folder)));
+// file deletion intentionally disabled
+export const deleteFromCloudinary = async () => ({ result: 'skipped' });
+export const deleteMultipleFromCloudinary = async () => ({ result: 'skipped' });

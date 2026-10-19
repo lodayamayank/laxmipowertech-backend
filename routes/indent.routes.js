@@ -1,5 +1,4 @@
 import express from "express";
-import fs from "fs";
 import mongoose from "mongoose";
 import auth from "../middleware/authMiddleware.js";
 import Indent from "../models/Indent.js";
@@ -10,8 +9,6 @@ import { filterByUserBranches, applySingleSiteBranchFilter } from '../middleware
 import { 
   upload, 
   uploadToCloudinary,
-  deleteFromCloudinary,
-  extractPublicId 
 } from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
@@ -33,11 +30,7 @@ const uploadIndentPhoto = (req, res, next) => {
   });
 };
 
-const removeTempFile = (filePath) => {
-  if (filePath && fs.existsSync(filePath)) {
-    fs.unlinkSync(filePath);
-  }
-};
+const removeTempFile = () => { /* Temp copy intentionally retained. */ };
 
 // ✅ Create new indent (User raises request)
 router.post("/", auth, async (req, res) => {
@@ -738,16 +731,7 @@ router.delete("/:id", auth, async (req, res) => {
     // Delete associated upcoming delivery
     await UpcomingDelivery.deleteMany({ st_id: req.params.id });
 
-    // Delete image from Cloudinary if exists
-    if (indent.imagePublicId) {
-      try {
-        await deleteFromCloudinary(indent.imagePublicId);
-        console.log('✅ Deleted Cloudinary image:', indent.imagePublicId);
-      } catch (cloudinaryErr) {
-        console.error('⚠️ Failed to delete Cloudinary image:', cloudinaryErr.message);
-        // Continue with indent deletion even if Cloudinary deletion fails
-      }
-    }
+    // file deletion intentionally disabled
 
     await Indent.findByIdAndDelete(req.params.id);
     console.log('✅ Deleted indent:', req.params.id);
@@ -838,7 +822,7 @@ router.post("/upload-photo", auth, uploadIndentPhoto, async (req, res) => {
     try {
       uploadedImage = await uploadToCloudinary(req.file.path, 'material-transfer/indents');
     } catch (uploadErr) {
-      console.error('❌ Cloudinary upload error:', uploadErr);
+      console.error('❌ NAS upload error:', uploadErr);
       return res.status(500).json({
         success: false,
         message: 'Failed to upload image. Please try again.',

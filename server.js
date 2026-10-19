@@ -45,7 +45,7 @@ const uploadDirs = [
   path.join(__dirname, 'uploads/purchaseOrders'),
   path.join(__dirname, 'uploads/indents'),
   path.join(__dirname, 'uploads/tasks'),
-  path.join(__dirname, 'tmp_uploads'),
+  path.join(__dirname, 'tmp-uploads'),
 ];
 
 for (const dir of uploadDirs) {
@@ -137,6 +137,7 @@ app.options(/.*/, cors());
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// Upload storage is served here; mount or symlink uploads/ to the NAS on the server.
 app.use('/uploads', express.static('uploads'));
 
 app.get('/api/health', (_req, res) => {

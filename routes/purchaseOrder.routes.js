@@ -9,9 +9,6 @@ import { filterByUserBranches, applySingleSiteBranchFilter } from '../middleware
 import { 
   upload, 
   uploadMultipleToCloudinary,
-  deleteFromCloudinary,
-  deleteMultipleFromCloudinary,
-  extractPublicId 
 } from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
@@ -185,25 +182,25 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
     const purchaseOrderId = await generatePurchaseOrderId();
     console.log('🆔 Generated Purchase Order ID:', purchaseOrderId);
     
-    // ✅ UPLOAD ATTACHMENTS TO CLOUDINARY
+    // ✅ UPLOAD ATTACHMENTS TO NAS
     let attachments = [];
     if (req.files && req.files.length > 0) {
       try {
-        console.log(`☁️ Uploading ${req.files.length} attachments to Cloudinary...`);
-        const cloudinaryResults = await uploadMultipleToCloudinary(
+        console.log(`☁️ Uploading ${req.files.length} attachments to NAS...`);
+        const storageResults = await uploadMultipleToCloudinary(
           req.files, 
           'material-transfer/purchase-orders'
         );
-        attachments = cloudinaryResults.map(result => ({
+        attachments = storageResults.map(result => ({
           url: result.url,
           publicId: result.publicId
         }));
-        console.log(`✅ Uploaded ${attachments.length} attachments to Cloudinary:`, attachments);
+        console.log(`✅ Uploaded ${attachments.length} attachments to NAS:`, attachments);
       } catch (uploadErr) {
-        console.error('❌ Cloudinary upload error:', uploadErr);
+        console.error('❌ NAS upload error:', uploadErr);
         return res.status(500).json({
           success: false,
-          message: 'Failed to upload attachments to Cloudinary',
+          message: 'Failed to upload attachments to NAS',
           error: uploadErr.message
         });
       }
@@ -578,9 +575,10 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
 
     if (req.files && req.files.length > 0) {
       // ✅ Use absolute URLs with backend domain for images
-      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
-      const newAttachments = req.files.map(f => `${baseURL}/uploads/purchaseOrders/${f.filename}`);
+      const results = await uploadMultipleToCloudinary(req.files, 'material-transfer/purchase-orders');
+      const newAttachments = results.map(result => ({ url: result.url, publicId: result.publicId }));
       const existingOrder = await PurchaseOrder.findById(req.params.id);
+      if (!existingOrder) return res.status(404).json({ success: false, message: 'Purchase order not found' });
       updateData.attachments = [...(existingOrder.attachments || []), ...newAttachments];
     }
 
@@ -678,15 +676,7 @@ router.delete('/:id', async (req, res) => {
     // ✅ Delete from UpcomingDelivery using sync service
     await deleteUpcomingDeliveryBySourceId(order.purchaseOrderId);
 
-    // Delete attachments
-    if (order.attachments && order.attachments.length > 0) {
-      order.attachments.forEach(att => {
-        const filePath = path.join(__dirname, '..', att);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      });
-    }
+    // file deletion intentionally disabled
 
     res.json({
       success: true,
@@ -721,18 +711,8 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
       });
     }
 
-    // ✅ DELETE FROM CLOUDINARY
-    const attachment = order.attachments[index];
-    if (attachment.publicId) {
-      try {
-        await deleteFromCloudinary(attachment.publicId);
-        console.log('✅ Deleted attachment from Cloudinary:', attachment.publicId);
-      } catch (cloudErr) {
-        console.error('⚠️ Failed to delete from Cloudinary:', cloudErr.message);
-        // Continue with deletion even if Cloudinary deletion fails
-      }
-    }
-
+    // ✅ DELETE FROM STORAGE (disabled)
+    // file deletion intentionally disabled
     order.attachments.splice(index, 1);
     await order.save();
 

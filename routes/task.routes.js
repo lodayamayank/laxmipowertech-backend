@@ -4,7 +4,7 @@ import Task from '../models/Task.js';
 import Project from '../models/Project.js';
 import User from '../models/User.js';
 import { filterByUserBranches } from '../middleware/branchAuthMiddleware.js';
-import { upload, uploadToCloudinary, deleteFromCloudinary } from '../middleware/cloudinaryMaterialMiddleware.js';
+import { upload, uploadToCloudinary } from '../middleware/cloudinaryMaterialMiddleware.js';
 import {
   resolveCapturedAt,
   findExistingByClientId,
@@ -73,9 +73,9 @@ router.post('/admin', auth, upload.single('photo'), async (req, res) => {
     
     // Photo is optional for admin
     if (req.file) {
-      const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
-      photoUrl = cloudinaryResult.url;
-      photoPublicId = cloudinaryResult.publicId;
+      const storageResult = await uploadToCloudinary(req.file.path, 'tasks');
+      photoUrl = storageResult.url;
+      photoPublicId = storageResult.publicId;
     }
     
     // Parse hierarchy data
@@ -148,7 +148,7 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
 
     // Offline replay: if this submission already landed, return it rather than
     // creating a second task. Checked before the upload so a retry does not
-    // push the same photo to Cloudinary twice.
+    // push the same photo to NAS twice.
     const clientId = readClientId(req.body);
     const existing = await findExistingByClientId(Task, clientId);
     if (existing) {
@@ -162,8 +162,8 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
 
     const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
 
-    // Upload photo to Cloudinary
-    const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
+    // Upload photo to NAS
+    const storageResult = await uploadToCloudinary(req.file.path, 'tasks');
 
     // Parse building, wing, floor, flat, room from JSON strings if needed
     const buildingData = typeof building === 'string' ? JSON.parse(building) : building;
@@ -182,8 +182,8 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
       flat: flatData,
       room: roomData,
       supervisor: req.user.id,
-      photoUrl: cloudinaryResult.url,
-      photoPublicId: cloudinaryResult.publicId,
+      photoUrl: storageResult.url,
+      photoPublicId: storageResult.publicId,
       notes: notes || '',
       status: 'pending',
       ...(clientId ? { clientId } : {}),
@@ -507,15 +507,12 @@ router.put('/:id', auth, upload.single('photo'), async (req, res) => {
 
     // Update photo if new one provided
     if (req.file) {
-      // Delete old photo from Cloudinary
-      if (task.photoPublicId) {
-        await deleteFromCloudinary(task.photoPublicId);
-      }
+      // file deletion intentionally disabled
       
       // Upload new photo
-      const cloudinaryResult = await uploadToCloudinary(req.file.path, 'tasks');
-      task.photoUrl = cloudinaryResult.url;
-      task.photoPublicId = cloudinaryResult.publicId;
+      const storageResult = await uploadToCloudinary(req.file.path, 'tasks');
+      task.photoUrl = storageResult.url;
+      task.photoPublicId = storageResult.publicId;
     }
 
     await task.save();
@@ -562,10 +559,7 @@ router.delete('/:id', auth, async (req, res) => {
       });
     }
 
-    // Delete photo from Cloudinary
-    if (task.photoPublicId) {
-      await deleteFromCloudinary(task.photoPublicId);
-    }
+    // file deletion intentionally disabled
 
     await task.deleteOne();
 

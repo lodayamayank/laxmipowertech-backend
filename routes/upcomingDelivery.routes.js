@@ -10,7 +10,6 @@ import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAut
 import { 
   upload, 
   uploadMultipleToCloudinary,
-  deleteFromCloudinary 
 } from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
@@ -1092,7 +1091,7 @@ router.get('/test-sync/:transferNumber', protect, async (req, res) => {
   }
 });
 
-// ✅ UPLOAD DELIVERY RECEIPT IMAGES (Cloudinary)
+// ✅ UPLOAD DELIVERY RECEIPT IMAGES (NAS)
 router.post('/:id/upload-receipts', upload.array('receipts', 10), async (req, res) => {
   try {
     console.log('📥 Upload receipt request for delivery:', req.params.id);
@@ -1113,19 +1112,19 @@ router.post('/:id/upload-receipts', upload.array('receipts', 10), async (req, re
       });
     }
 
-    // ✅ UPLOAD TO CLOUDINARY
-    console.log(`☁️ Uploading ${req.files.length} receipt images to Cloudinary...`);
-    const cloudinaryResults = await uploadMultipleToCloudinary(
+    // ✅ UPLOAD TO NAS
+    console.log(`☁️ Uploading ${req.files.length} receipt images to NAS...`);
+    const storageResults = await uploadMultipleToCloudinary(
       req.files, 
-      'material-transfer/delivery-receipts'
+      'material-transfer/deliveries'
     );
     
-    const newAttachments = cloudinaryResults.map(result => ({
+    const newAttachments = storageResults.map(result => ({
       url: result.url,
       publicId: result.publicId
     }));
     
-    console.log(`✅ Uploaded ${newAttachments.length} receipts to Cloudinary`);
+    console.log(`✅ Uploaded ${newAttachments.length} receipts to NAS`);
 
     // ✅ ADD TO EXISTING ATTACHMENTS
     delivery.attachments = delivery.attachments || [];
@@ -1167,18 +1166,8 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
       });
     }
 
-    // ✅ DELETE FROM CLOUDINARY
-    const attachment = delivery.attachments[index];
-    if (attachment.publicId) {
-      try {
-        await deleteFromCloudinary(attachment.publicId);
-        console.log('✅ Deleted receipt from Cloudinary:', attachment.publicId);
-      } catch (cloudErr) {
-        console.error('⚠️ Failed to delete from Cloudinary:', cloudErr.message);
-        // Continue with deletion even if Cloudinary deletion fails
-      }
-    }
-
+    // ✅ DELETE FROM STORAGE (disabled)
+    // file deletion intentionally disabled
     delivery.attachments.splice(index, 1);
     await delivery.save();
 

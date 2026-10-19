@@ -2,13 +2,11 @@ import express from 'express';
 import { randomInt } from 'node:crypto';
 import Attendance from '../models/Attendance.js';
 import authMiddleware from '../middleware/authMiddleware.js';
-import upload from '../config/multer.js';
+import upload, { uploadTo, fileUrl } from '../config/multer.js';
 import User from '../models/User.js';
 import SupervisorAttendanceCode from '../models/SupervisorAttendanceCode.js';
 import mongoose from 'mongoose';
 import axios from 'axios'; //  For reverse geocoding
-import cloudinary from '../config/cloudinary.js';
-import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
 import {
@@ -106,18 +104,6 @@ const findOrCreateSupervisorCode = async (supervisorId, branchId, date) => {
 // with the matching literal in AdminDeleteAttendance.jsx on the frontend.
 const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
 
-// Cloudinary secure_urls look like
-// https://res.cloudinary.com/<cloud>/image/upload/v169.../laxmipowertech/selfies/<id>.jpg
-// The public_id (needed to delete the asset) is the folder+filename with the
-// version segment and extension stripped off.
-const extractCloudinaryPublicId = (url) => {
-  if (!url || typeof url !== 'string') return null;
-  const match = url.match(
- /\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/
-  );
-  return match ? match[1] : null;
-};
-
 // Resolve a startDate/endDate query pair into a [00:00:00, 23:59:59] range.
 // A missing endDate collapses the range onto startDate alone (single-day delete).
 const resolveDeleteRange = (startDate, endDate) => {
@@ -141,18 +127,11 @@ const resolveDeleteRange = (startDate, endDate) => {
   return { rangeStart, rangeEnd };
 };
 
-// Drop a multer temp file we are not going to use (early return / error path).
-const discardUpload = (file) => {
-  if (!file?.path) return;
-  try {
-    fs.unlinkSync(file.path);
-  } catch {
-    /* already gone – nothing to clean up */
-  }
-};
+// Rejected/replayed uploads are already in final storage: retain them as well.
+const discardUpload = () => { /* file deletion intentionally disabled */ };
 
 // ✅ PUNCH IN/OUT
-router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) => {
+router.post('/punch', authMiddleware, uploadTo('attendance-selfies').single('selfie'), async (req, res) => {
   console.log('🔥 HIT /api/attendance/punch route');
   try {
     const { punchType, lat, lng } = req.body;
@@ -173,8 +152,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
     }
 
     // Offline replay: if this exact punch already landed, return it instead of
-    // recording a second one. Checked before the Cloudinary upload so a retry
-    // does not re-upload the selfie.
+    // recording a second one. The extra uploaded file is intentionally retained.
     const clientId = readClientId(req.body);
     const existing = await findExistingByClientId(Attendance, clientId);
     if (existing) {
@@ -204,20 +182,9 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
     // ✅ Upload selfie
     let selfieUrl = "";
     try {
-      const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "laxmipowertech/selfies",
-        public_id: `${req.user.id}_${Date.now()}`,
-        // Cloudinary's perceptual-quality algorithm re-encodes the image at
-        // the smallest size that looks the same as the original — this runs
-        // once at upload time, so the stored file (and secure_url) is already
-        // the compressed version. "auto:good" biases toward preserving
-        // quality over squeezing out the last few KB.
-        quality: "auto:good",
-      });
-      selfieUrl = result.secure_url;
-      fs.unlinkSync(req.file.path); // clean up
+      selfieUrl = fileUrl(req.file);
     } catch (uploadErr) {
-      console.error("Cloudinary upload failed:", uploadErr);
+      console.error("NAS upload failed:", uploadErr);
       discardUpload(req.file);
       return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
     }
@@ -240,6 +207,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       await attendance.save();
       return res.status(201).json({ message: "Punch recorded", attendance });
     } catch (saveErr) {
+      console.warn('Orphan file kept:', selfieUrl);
       // Two replays raced: the loser hit the unique clientId index. The punch
       // exists, so this is a success from the client's point of view.
       if (isDuplicateClientIdError(saveErr)) {
@@ -1077,11 +1045,8 @@ router.get("/admin/delete-preview", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ DELETE: Bulk-delete attendance records and/or their Cloudinary selfies for
-// a date/date-range (Admin only). The admin picks a target — database, Cloudinary,
-// or both — via deleteFromDatabase / deleteFromCloudinary. Requires the admin to
-// have typed the exact confirmation phrase, checked again here in case this is
-// called directly.
+// Bulk-delete database records only. Both storage flags are accepted and ignored.
+// Stored files and retained record URLs are never changed.
 router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -1090,7 +1055,8 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
         .json({ message: "Only admins can perform this action" });
     }
 
-    const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary } = req.body;
+    const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary, deleteFromStorage } = req.body;
+    const deleteFiles = deleteFromStorage ?? deleteFromCloudinary;
 
     if (confirmationPhrase !== DELETE_CONFIRMATION_PHRASE) {
       return res.status(400).json({
@@ -1098,8 +1064,8 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
       });
     }
 
-    if (!deleteFromDatabase && !deleteFromCloudinary) {
-      return res.status(400).json({ message: 'Select at least one target: database or Cloudinary' });
+    if (!deleteFromDatabase && !deleteFiles) {
+      return res.status(400).json({ message: 'Select at least one target: database or storage (file deletion disabled)' });
     }
 
     const range = resolveDeleteRange(startDate, endDate);
@@ -1115,49 +1081,10 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
       return res.status(404).json({ message: 'No attendance records found in the selected period' });
     }
 
-    let cloudinaryDeleted = 0;
-    let cloudinaryFailed = 0;
-
-    if (deleteFromCloudinary) {
-      // Map public_id back to its record so a Cloudinary-only delete can clear
-      // the now-dangling selfieUrl without touching the rest of the document.
-      const publicIdToRecordId = new Map();
-      records.forEach((r) => {
-        const publicId = extractCloudinaryPublicId(r.selfieUrl);
-        if (publicId) publicIdToRecordId.set(publicId, r._id);
-      });
-      const publicIds = [...publicIdToRecordId.keys()];
-      const deletedRecordIds = [];
-
-      // Batched at 100 (the admin delete_resources limit) — a Cloudinary hiccup
-      // should not block the rest of the request.
-      for (let i = 0; i < publicIds.length; i += 100) {
-        const batch = publicIds.slice(i, i + 100);
-        try {
-          const result = await cloudinary.api.delete_resources(batch);
-          batch.forEach((publicId) => {
-            if (result.deleted?.[publicId] === 'deleted') {
-              cloudinaryDeleted += 1;
-              deletedRecordIds.push(publicIdToRecordId.get(publicId));
-            } else {
-              cloudinaryFailed += 1;
-            }
-          });
-        } catch (cloudErr) {
-          console.error('Cloudinary batch delete failed:', cloudErr.message);
-          cloudinaryFailed += batch.length;
-        }
-      }
-
-      // Only clear selfieUrl when the DB record itself is being kept — if it's
-      // about to be deleted wholesale below, there's nothing to clean up here.
-      if (!deleteFromDatabase && deletedRecordIds.length) {
-        await Attendance.updateMany(
-          { _id: { $in: deletedRecordIds } },
-          { $set: { selfieUrl: null } }
-        );
-      }
-    }
+    // file deletion intentionally disabled
+    const cloudinaryDeleted = 0;
+    const cloudinaryFailed = 0;
+    const filesSkipped = records.filter(record => Boolean(record.selfieUrl)).length;
 
     let deletedCount = 0;
     if (deleteFromDatabase) {
@@ -1170,7 +1097,7 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
         req.user.email || req.user.id
       } bulk-deleted attendance for ` +
         `${rangeStart.toISOString()} to ${rangeEnd.toISOString()} ` +
-        `(database=${!!deleteFromDatabase}, cloudinary=${!!deleteFromCloudinary}, ` +
+        `(database=${!!deleteFromDatabase}, storageRequested=${!!deleteFiles}; file deletion disabled, ` +
         `deletedCount=${deletedCount}, cloudinaryDeleted=${cloudinaryDeleted})`
     );
 
@@ -1179,6 +1106,10 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
       deletedCount,
       cloudinaryDeleted,
       cloudinaryFailed,
+      filesDeleted: 0,
+      filesFailed: 0,
+      filesSkipped,
+      deleteFromStorage: !!deleteFiles,
       deleteFromDatabase: !!deleteFromDatabase,
       deleteFromCloudinary: !!deleteFromCloudinary,
       startDate: rangeStart.toISOString(),

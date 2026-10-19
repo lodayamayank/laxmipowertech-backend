@@ -7,9 +7,6 @@ import { filterByUserBranches, applyBranchFilter } from '../middleware/branchAut
 import { 
   upload, 
   uploadMultipleToCloudinary,
-  deleteFromCloudinary,
-  deleteMultipleFromCloudinary,
-  extractPublicId 
 } from '../middleware/cloudinaryMaterialMiddleware.js';
 
 const router = express.Router();
@@ -152,19 +149,19 @@ router.post('/', upload.array('attachments', 10), async (req, res) => {
 
     const siteTransferId = await generateSiteTransferId();
     
-    // ✅ UPLOAD ATTACHMENTS TO CLOUDINARY
+    // ✅ UPLOAD ATTACHMENTS TO NAS
     let attachments = [];
     if (req.files && req.files.length > 0) {
-      console.log(`☁️ Uploading ${req.files.length} attachments to Cloudinary...`);
-      const cloudinaryResults = await uploadMultipleToCloudinary(
+      console.log(`☁️ Uploading ${req.files.length} attachments to NAS...`);
+      const storageResults = await uploadMultipleToCloudinary(
         req.files, 
         'material-transfer/site-transfers'
       );
-      attachments = cloudinaryResults.map(result => ({
+      attachments = storageResults.map(result => ({
         url: result.url,
         publicId: result.publicId
       }));
-      console.log(`✅ Uploaded ${attachments.length} attachments to Cloudinary`);
+      console.log(`✅ Uploaded ${attachments.length} attachments to NAS`);
     }
 
     const siteTransfer = new SiteTransfer({
@@ -344,16 +341,11 @@ router.put('/:id', upload.array('attachments', 10), async (req, res) => {
       status: req.body.status
     };
 
-    const attachments = [];
-    if (req.files && req.files.length > 0) {
-      // Use absolute URLs with backend domain for images
-      const baseURL = process.env.BACKEND_URL || 'https://laxmipowertech-backend-1.onrender.com';
-      req.files.forEach(file => {
-        attachments.push(`${baseURL}/uploads/siteTransfers/${file.filename}`);
-      });
-    }
+    const results = req.files?.length ? await uploadMultipleToCloudinary(req.files, 'material-transfer/site-transfers') : [];
+    const attachments = results.map(result => ({ url: result.url, publicId: result.publicId }));
 
     const existingTransfer = await SiteTransfer.findById(req.params.id);
+    if (!existingTransfer) return res.status(404).json({ success: false, message: 'Site transfer not found' });
     updateData.attachments = [...(existingTransfer.attachments || []), ...attachments];
 
     const transfer = await SiteTransfer.findByIdAndUpdate(
@@ -422,15 +414,7 @@ router.delete('/:id', async (req, res) => {
     // ✅ Delete from UpcomingDelivery using sync service
     await deleteUpcomingDeliveryBySourceId(transfer.siteTransferId);
 
-    // Delete attachments
-    if (transfer.attachments && transfer.attachments.length > 0) {
-      transfer.attachments.forEach(att => {
-        const filePath = path.join(__dirname, '..', att);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      });
-    }
+    // file deletion intentionally disabled
 
     res.json({
       success: true,
@@ -465,13 +449,7 @@ router.delete('/:id/attachments/:attachmentIndex', async (req, res) => {
       });
     }
 
-    const attachmentPath = transfer.attachments[index];
-    const filePath = path.join(__dirname, '..', attachmentPath);
-    
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-
+    // file deletion intentionally disabled
     transfer.attachments.splice(index, 1);
     await transfer.save();
 

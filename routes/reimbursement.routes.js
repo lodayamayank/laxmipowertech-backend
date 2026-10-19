@@ -1,7 +1,7 @@
+import { uploadTo, fileUrl } from '../config/multer.js';
 import express from "express";
 import multer from "multer";
 import path from "path";
-import fs from "fs";
 import Reimbursement from "../models/Reimbursement.js";
 import User from "../models/User.js";
 import auth from "../middleware/authMiddleware.js";
@@ -15,19 +15,7 @@ import {
 const router = express.Router();
 
 // Setup multer for receipt uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = "./uploads/reimbursements";
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
-    }
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
-  },
-});
+const storage = uploadTo('reimbursement-receipts').storage;
 
 const upload = multer({
   storage,
@@ -45,6 +33,7 @@ const upload = multer({
 
 // ✅ Create reimbursement request
 router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
+  const movedPaths = [];
   try {
     const { items, note } = req.body;
 
@@ -66,9 +55,14 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
     // Parse items if it's a JSON string
     const parsedItems = typeof items === "string" ? JSON.parse(items) : items;
 
+    if (!Array.isArray(parsedItems) || !parsedItems.length) throw new Error('At least one item is required');
+
     // Add uploaded file paths to respective items
     if (req.files && req.files.length > 0) {
-      const receiptPaths = req.files.map(file => `/uploads/reimbursements/${file.filename}`);
+      for (const file of req.files) {
+        movedPaths.push(fileUrl(file));
+      }
+      const receiptPaths = movedPaths;
       
       // Distribute receipts to items (you can modify logic as needed)
       parsedItems.forEach((item, index) => {
@@ -95,6 +89,8 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
     try {
       await reimbursement.save();
     } catch (saveErr) {
+      for (const relPath of movedPaths) console.warn('Orphan file kept:', relPath);
+      movedPaths.length = 0;
       // Two replays raced; the loser hit the unique clientId index. The claim
       // exists, so report success with the winner rather than a 500.
       if (isDuplicateClientIdError(saveErr)) {
@@ -111,6 +107,7 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
       throw saveErr;
     }
 
+    movedPaths.length = 0;
     // Populate user details for response
     await reimbursement.populate("user", "name username email mobileNumber role");
     
@@ -119,6 +116,7 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
       reimbursement,
     });
   } catch (err) {
+    for (const relPath of movedPaths) console.warn('Orphan file kept:', relPath);
     console.error("Reimbursement creation error:", err);
     res.status(400).json({ 
       message: "Failed to submit reimbursement", 
@@ -284,16 +282,8 @@ router.delete("/:id", auth, async (req, res) => {
       });
     }
     
-    // Delete associated files
-    reimbursement.items.forEach(item => {
-      item.receipts.forEach(receipt => {
-        const filePath = `.${receipt}`;
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      });
-    });
-    
+    // file deletion intentionally disabled
+
     await reimbursement.deleteOne();
     
     res.json({ message: "Reimbursement deleted successfully" });

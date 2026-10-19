@@ -3,7 +3,7 @@ import express from "express";
 import Leave from "../models/Leave.js";
 import auth from "../middleware/authMiddleware.js";
 import Attendance from "../models/Attendance.js";
-import { upload, uploadToCloudinary } from "../middleware/cloudinaryMaterialMiddleware.js";
+import { uploadTo, fileUrl } from '../config/multer.js';
 import fs from "fs";
 import {
   resolveCapturedAt,
@@ -24,13 +24,13 @@ const hasValidImageSignature = (filePath, mimetype) => {
 };
 
 // ✅ Request leave
-router.post("/", auth, upload.single("proof"), async (req, res) => {
+router.post("/", auth, uploadTo('leave-proofs').single("proof"), async (req, res) => {
   try {
     if (req.body.type === "sick" && !req.file) {
       return res.status(400).json({ message: "Medical proof image is required for sick leave" });
     }
     if (req.file && !hasValidImageSignature(req.file.path, req.file.mimetype)) {
-      fs.unlinkSync(req.file.path);
+      // Stored file intentionally retained.
       return res.status(400).json({ message: "Only valid image files are allowed for medical proof" });
     }
 
@@ -38,29 +38,16 @@ router.post("/", auth, upload.single("proof"), async (req, res) => {
     const clientId = readClientId(req.body);
     const existing = await findExistingByClientId(Leave, clientId);
     if (existing) {
-      if (req.file?.path) {
-        fs.unlinkSync(req.file.path);
-      }
+      // Stored file intentionally retained.
       return res.status(200).json({ ...existing.toObject(), duplicate: true });
     }
 
+    const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
     let proofUrl;
     if (req.file) {
-      const uploadedProof = await uploadToCloudinary(
-        req.file.path,
-        "laxmipowertech/leaves/proofs",
-        null,
-        {
-          resource_type: "image",
-          quality: "auto:eco",
-          fetch_format: "auto",
-          transformation: [{ width: 1600, height: 1600, crop: "limit" }],
-        }
-      );
-      proofUrl = uploadedProof.url;
+      proofUrl = fileUrl(req.file);
     }
 
-    const { date: capturedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
     // clientId/capturedAt are transport concerns – don't let them spread into
     // the document twice via ...req.body.
     const { clientId: _cid, capturedAt: _cap, ...leaveFields } = req.body;
@@ -77,6 +64,7 @@ router.post("/", auth, upload.single("proof"), async (req, res) => {
     try {
       await leave.save();
     } catch (saveErr) {
+      if (proofUrl) console.warn('Orphan file kept:', proofUrl);
       if (isDuplicateClientIdError(saveErr)) {
         const winner = await findExistingByClientId(Leave, clientId);
         if (winner) return res.status(200).json({ ...winner.toObject(), duplicate: true });

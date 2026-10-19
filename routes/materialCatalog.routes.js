@@ -46,7 +46,7 @@ const readWorkbookSheets = async (filePath) => {
 
 // Multer storage for Excel
 const upload = multer({
-  dest: path.join(__dirname, '..', 'tmp_uploads'),
+  dest: path.join(__dirname, '..', 'tmp-uploads'),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
   fileFilter: (req, file, cb) => {
     const allowedTypes = [
@@ -67,7 +67,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 
     const targetPath = path.join(uploadsDir, `${Date.now()}-${file.originalname}`);
-    fs.renameSync(file.path, targetPath);
+    // Copy only: retain the spreadsheet temp source as well as the legacy archive.
+    fs.copyFileSync(file.path, targetPath, fs.constants.COPYFILE_EXCL);
 
     const sheets = await readWorkbookSheets(targetPath);
     const allRows = [];
