@@ -390,6 +390,7 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
       overtimeRateMultiplier,
       otherAmount,
       otherAmountType,
+      otherAmounts, 
     } = req.body;
 
     const updateData = {};
@@ -403,6 +404,26 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
     if (overtimeRateMultiplier !== undefined) updateData.overtimeRateMultiplier = overtimeRateMultiplier;
     if (otherAmount !== undefined) updateData.otherAmount = otherAmount;
     if (otherAmountType !== undefined) updateData.otherAmountType = otherAmountType;
+        if (otherAmounts !== undefined) {
+      if (!Array.isArray(otherAmounts)) {
+        return res.status(400).json({ message: 'otherAmounts must be an array' });
+      }
+      const cleaned = [];
+      for (const o of otherAmounts) {
+        const label = String(o.label || '').trim();
+        const amount = Number(o.amount);
+        if (!label) return res.status(400).json({ message: 'Each other amount needs a reason' });
+        if (!Number.isFinite(amount) || amount < 0) {
+          return res.status(400).json({ message: `Invalid amount for "${label}"` });
+        }
+        if (!['earning', 'deduction'].includes(o.type)) {
+          return res.status(400).json({ message: `Invalid type for "${label}"` });
+        }
+        cleaned.push({ label, amount, type: o.type });
+      }
+      updateData.otherAmounts = cleaned;
+      updateData.otherAmount = 0; // clear old single field
+    }
 
     const updatedUser = await sanitizeUserQuery(User.findByIdAndUpdate(
       req.params.id,

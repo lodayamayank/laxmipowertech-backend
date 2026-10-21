@@ -108,7 +108,8 @@ router.post('/generate', authMiddleware, async (req, res) => {
     const yearNum = parseInt(year);
 
     // Use service directly — no internal HTTP call
-    const salaryData = await calculateSalaryForPeriod({ month: monthNum, year: yearNum, userId });
+        const result = await calculateSalaryForPeriod({ month: monthNum, year: yearNum, userId, all: true });
+    const salaryData = result.data;
 
     if (!salaryData || salaryData.length === 0) {
       return res.status(404).json({ message: 'No salary data found for the specified period' });
@@ -164,8 +165,7 @@ router.post('/generate', authMiddleware, async (req, res) => {
           railwayPassAmount: salary.railwayPassAmount || 0,
           standardDailyHours: salary.standardDailyHours || 9,
           overtimeRateMultiplier: salary.overtimeRateMultiplier || 1.0,
-          otherAmount: salary.otherAmount || 0,
-          otherAmountType: salary.otherAmountType || 'earning',
+          otherAmounts: salary.otherAmounts || [],
         },
         attendance: salary.attendance,
         grossSalary: salary.grossSalary,
@@ -181,8 +181,9 @@ router.post('/generate', authMiddleware, async (req, res) => {
           multiplier: salary.overtime?.multiplier || 1.0,
           total: salary.overtime?.total || 0,
         },
-        otherAmount: salary.otherAmount || 0,
-        otherAmountType: salary.otherAmountType || 'earning',
+        otherAmounts: salary.otherAmounts || [],
+        otherEarnings: salary.otherEarnings || 0,
+        otherDeductions: salary.otherDeductions || 0,
         netSalary: salary.netSalary,
         paymentStatus: 'pending',
         generatedBy: req.user.id,
