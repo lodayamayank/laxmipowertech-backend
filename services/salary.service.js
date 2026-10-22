@@ -171,26 +171,26 @@ function computeAttendance({ year, month, userAttendance, userLeaves, isLabour, 
 }
 
 // Main exported function
-export async function calculateSalaryForPeriod({ month, year, role, userId, page = 1, limit = 50 }) {
+export async function calculateSalaryForPeriod({ month, year, role, userId, page = 1, limit = 50, all = false }) {
   const monthNum = parseInt(month);
   const yearNum = parseInt(year);
   const pageNum = Math.max(1, parseInt(page));
   const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
 
-  // Admins are never on payroll — excluded unconditionally
   const userQuery = { role: { $ne: 'admin' } };
   if (role && role.toLowerCase() !== 'admin') userQuery.role = role.toLowerCase();
   if (userId) userQuery._id = userId;
 
   const totalCount = await User.countDocuments(userQuery);
-  const users = await User.find(userQuery)
+  let usersQuery = User.find(userQuery)
     .populate('project', 'name')
-    .populate('assignedBranches', 'name')
-    .skip((pageNum - 1) * limitNum)
-    .limit(limitNum)
-    .lean();
+    .populate('assignedBranches', 'name');
+  if (!all) usersQuery = usersQuery.skip((pageNum - 1) * limitNum).limit(limitNum);
+  const users = await usersQuery.lean();
 
-  if (users.length === 0) return { data: [], total: totalCount, page: pageNum, limit: limitNum, totalPages: Math.ceil(totalCount / limitNum) };
+  const totalPages = all ? 1 : Math.ceil(totalCount / limitNum);
+
+  if (users.length === 0) return { data: [], total: totalCount, page: pageNum, limit: limitNum, totalPages };
 
   const startDate = new Date(yearNum, monthNum - 1, 1);
   startDate.setHours(0, 0, 0, 0);
@@ -327,10 +327,22 @@ export async function calculateSalaryForPeriod({ month, year, role, userId, page
     const unpaidLeaveDeduction = effectiveUnpaidLeaveDays * perDaySalary;
     const totalDeductions = absentDeduction + halfDayDeduction + unpaidLeaveDeduction;
 
-    // Other amount (11.3)
-    const otherAmount = user.otherAmount || 0;
-    const otherAmountType = user.otherAmountType || 'earning';
-    const otherAdjustment = otherAmountType === 'deduction' ? -otherAmount : otherAmount;
+       // Other amounts (11.3)
+    let otherAmounts = (user.otherAmounts || []).map(o => ({
+      label: o.label,
+      amount: o.amount,
+      type: o.type,
+    }));
+    if (otherAmounts.length === 0 && (user.otherAmount || 0) > 0) {
+      otherAmounts = [{
+        label: 'Other',
+        amount: user.otherAmount,
+        type: user.otherAmountType || 'earning',
+      }];
+    }
+    const otherEarnings = otherAmounts.filter(o => o.type === 'earning').reduce((s, o) => s + o.amount, 0);
+    const otherDeductions = otherAmounts.filter(o => o.type === 'deduction').reduce((s, o) => s + o.amount, 0);
+    const otherAdjustment = otherEarnings - otherDeductions;
 
     // Net salary
     const netSalary =
@@ -360,8 +372,9 @@ export async function calculateSalaryForPeriod({ month, year, role, userId, page
       railwayPassAmount: user.railwayPassAmount || 0,
       standardDailyHours: user.standardDailyHours || 9,
       overtimeRateMultiplier: overtimeMultiplier,
-      otherAmount,
-      otherAmountType,
+      otherAmounts,
+      otherEarnings: Math.round(otherEarnings),
+      otherDeductions: Math.round(otherDeductions),
       grossSalary: Math.round(grossSalary),
       perDaySalary: Math.round(perDaySalary),
       perHourRate,
@@ -404,6 +417,6 @@ export async function calculateSalaryForPeriod({ month, year, role, userId, page
     total: totalCount,
     page: pageNum,
     limit: limitNum,
-    totalPages: Math.ceil(totalCount / limitNum),
+    totalPages,
   };
 }

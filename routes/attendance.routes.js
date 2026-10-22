@@ -11,7 +11,10 @@ import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
 import Branch from '../models/Branch.js';
-import { findBranchForPunch } from "../utils/branchMatching.js";
+import {
+  findBranchForPunch,
+  findNearestAssignedBranch,
+} from "../utils/branchMatching.js";
 import AttendanceNote from '../models/AttendanceNote.js';
 import {
   resolveCapturedAt,
@@ -254,7 +257,7 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
   }
 });
 
-// ✅ GET: Today's fallback attendance codes for the logged-in supervisor
+// ✅ GET: Today's fallback attendance code for the logged-in supervisor
 router.get("/supervisor-codes", authMiddleware, async (req, res) => {
   try {
     if (req.user.role !== "supervisor") {
@@ -263,9 +266,35 @@ router.get("/supervisor-codes", authMiddleware, async (req, res) => {
       });
     }
 
+    const { lat, lng } = req.query || {};
+
+    if (
+      lat === undefined ||
+      lat === null ||
+      lat === "" ||
+      lng === undefined ||
+      lng === null ||
+      lng === ""
+    ) {
+      return res.status(400).json({
+        message: "Valid location is required",
+        codes: [],
+      });
+    }
+
+    const latitude = Number(lat);
+    const longitude = Number(lng);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      return res.status(400).json({
+        message: "Invalid location coordinates",
+        codes: [],
+      });
+    }
+
     const supervisor = await User.findById(req.user.id)
       .select("assignedBranches")
-      .populate("assignedBranches", "name")
+      .populate("assignedBranches", "name lat lng radius")
       .lean();
 
     if (!supervisor) {
@@ -277,27 +306,38 @@ router.get("/supervisor-codes", authMiddleware, async (req, res) => {
       return res.json({ codes: [] });
     }
 
-    const today = getServerDay();
-    const dateKey = formatDateKey(today);
-    const codes = await Promise.all(
-      assignedBranches.map(async (branch) => {
-        const branchId = branch._id || branch;
-        const record = await findOrCreateSupervisorCode(
-          req.user.id,
-          branchId,
-          today
-        );
-
-        return {
-          branchId: branchId.toString(),
-          branchName: branch.name || "",
-          code: record.code,
-          date: dateKey,
-        };
-      })
+    const matchedBranch = findNearestAssignedBranch(
+      latitude,
+      longitude,
+      assignedBranches,
+      assignedBranches
     );
 
-    return res.json({ codes });
+    if (!matchedBranch) {
+      return res.status(403).json({
+        message: "You are not within any of your assigned branch locations.",
+        codes: [],
+      });
+    }
+
+    const today = getServerDay();
+    const dateKey = formatDateKey(today);
+    const record = await findOrCreateSupervisorCode(
+      req.user.id,
+      matchedBranch._id,
+      today
+    );
+
+    return res.json({
+      codes: [
+        {
+          branchId: matchedBranch._id.toString(),
+          branchName: matchedBranch.name || "",
+          code: record.code,
+          date: dateKey,
+        },
+      ],
+    });
   } catch (error) {
     console.error("Supervisor attendance codes error:", error);
     return res
@@ -350,19 +390,11 @@ router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req,
 
     const branches = await Branch.find().lean();
 
-    const detectedBranchName = findBranchForPunch(
+    const detectedBranch = findNearestAssignedBranch(
       latitude,
       longitude,
       assignedBranches,
       branches
-    );
-    const assignedBranchIds = new Set(
-      assignedBranches.map((branch) => (branch._id || branch).toString())
-    );
-    const detectedBranch = branches.find(
-      (branch) =>
-        branch.name === detectedBranchName &&
-        assignedBranchIds.has(branch._id.toString())
     );
 
     console.log("Supervisor code punch details:", {
@@ -371,7 +403,7 @@ router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req,
         ? { id: detectedBranch._id.toString(), name: detectedBranch.name }
         : null,
       punchType,
-    });
+    });;
 
     if (!detectedBranch) {
       return res.status(400).json({
@@ -547,13 +579,47 @@ router.get("/", authMiddleware, async (req, res) => {
 // ✅ GET: Attendance Summary (Aggregated per User)
 router.get('/summary', authMiddleware, async (req, res) => {
   try {
-    let { project, role, month, year } = req.query;
+    const { project, role, month, year, startDate: requestedStart, endDate: requestedEnd } = req.query;
+    const hasDateRange = requestedStart !== undefined || requestedEnd !== undefined;
+    let startDate;
+    let endDateExclusive;
+    let days;
 
-    const monthNum = parseInt(month) || new Date().getMonth() + 1;
-    const yearNum = parseInt(year) || new Date().getFullYear();
+    if (hasDateRange) {
+      const parseDateOnly = (value) => {
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const parsed = new Date(`${value}T00:00:00.000Z`);
+        return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+          ? parsed
+          : null;
+      };
 
-    const startDate = new Date(yearNum, monthNum - 1, 1);
-    const endDate = new Date(yearNum, monthNum, 0, 23, 59, 59);
+      startDate = parseDateOnly(requestedStart);
+      const inclusiveEnd = parseDateOnly(requestedEnd);
+      if (!startDate || !inclusiveEnd) {
+        return res.status(400).json({ message: 'Valid startDate and endDate in YYYY-MM-DD format are required' });
+      }
+      if (startDate > inclusiveEnd) {
+        return res.status(400).json({ message: 'startDate cannot be after endDate' });
+      }
+
+      endDateExclusive = new Date(inclusiveEnd);
+      endDateExclusive.setUTCDate(endDateExclusive.getUTCDate() + 1);
+      days = [];
+      for (let day = new Date(startDate); day < endDateExclusive; day.setUTCDate(day.getUTCDate() + 1)) {
+        days.push({ key: day.toISOString().split('T')[0] });
+      }
+    } else {
+      const monthNum = parseInt(month) || new Date().getMonth() + 1;
+      const yearNum = parseInt(year) || new Date().getFullYear();
+
+      startDate = new Date(yearNum, monthNum - 1, 1);
+      endDateExclusive = new Date(yearNum, monthNum, 1);
+      days = Array.from({ length: new Date(yearNum, monthNum, 0).getDate() }, (_, index) => {
+        const day = new Date(yearNum, monthNum - 1, index + 1);
+        return { key: day.toISOString().split('T')[0] };
+      });
+    }
 
     // Fetch users by role/project
     const userQuery = {};
@@ -566,10 +632,10 @@ router.get('/summary', authMiddleware, async (req, res) => {
     const results = [];
 
     for (const u of users) {
-      // Fetch attendance for the user in this month
+      // Fetch attendance only within the requested calendar-day range.
       const punches = await Attendance.find({
         user: u._id,
-        date: { $gte: startDate, $lte: endDate },   // ✅ use date, not createdAt
+        date: { $gte: startDate, $lt: endDateExclusive },
       })
         .populate("leaveId", "type")                // ✅ populate leaveId
         .lean();
@@ -593,11 +659,7 @@ router.get('/summary', authMiddleware, async (req, res) => {
         sickLeave = 0,
         casualLeave = 0;
 
-      const daysInMonth = new Date(yearNum, monthNum, 0).getDate();
-      for (let day = 1; day <= daysInMonth; day++) {
-        const d = new Date(yearNum, monthNum - 1, day);
-        const key = d.toISOString().split("T")[0];
-        const dow = d.getDay();
+      for (const { key } of days) {
 
         const punchesToday = byDay[key] || [];
 
@@ -666,7 +728,85 @@ router.get('/summary', authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Failed to generate summary" });
   }
 });
+  // ✅ GET: One user's attendance for a date range (used by AttendanceGraphModal)
+router.get("/user/:userId", authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { startDate, endDate } = req.query;
 
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid userId" });
+    }
+    if (!startDate || !endDate || isNaN(new Date(startDate)) || isNaN(new Date(endDate))) {
+      return res.status(400).json({ message: "Valid startDate and endDate are required" });
+    }
+
+    // --- Authorization: self, admin/supervisor, or the user's reporting manager ---
+    const isSelf = String(req.user.id) === String(userId);
+    const privileged = ["admin", "supervisor"].includes(req.user.role);
+    if (!isSelf && !privileged) {
+      const reportsToMe = await User.exists({
+        _id: userId,
+        reportingManager: req.user.id,
+      });
+      if (!reportsToMe) {
+        return res.status(403).json({ message: "Not allowed to view this user's attendance" });
+      }
+    }
+
+    const filterStart = new Date(startDate);
+    filterStart.setHours(0, 0, 0, 0);
+    const filterEnd = new Date(endDate);
+    filterEnd.setHours(23, 59, 59, 999);
+
+    // Notes are "YYYY-MM-DD" strings; pad the range by a day
+    const dayKey = (d) => d.toISOString().split("T")[0];
+    const noteFrom = dayKey(new Date(filterStart.getTime() - 24 * 60 * 60 * 1000));
+    const noteTo = dayKey(new Date(filterEnd.getTime() + 24 * 60 * 60 * 1000));
+
+    const [rawRecords, notes, branches] = await Promise.all([
+      Attendance.find({
+        user: userId,
+        createdAt: { $gte: filterStart, $lte: filterEnd },
+      })
+        .sort({ createdAt: -1 })
+        .populate("user", "name role email employeeId assignedBranches")
+        .populate("leaveId", "type")
+        .lean(),
+      AttendanceNote.find({
+        userId,
+        date: { $gte: noteFrom, $lte: noteTo },
+      }).lean(),
+      Branch.find().lean(),
+    ]);
+
+    const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
+    const branchIdToName = new Map(branches.map((b) => [b._id.toString(), b.name]));
+
+    // Same response shape as GET /attendance, so the frontend needs no other change
+    const records = rawRecords.map((r) => {
+      const dateKey = dayKey(new Date(r.createdAt));
+      const branchName =
+        (r.branch && branchIdToName.get(r.branch.toString())) ||
+        findBranchForPunch(
+          Number(r.lat),
+          Number(r.lng),
+          r.user?.assignedBranches || [],
+          branches
+        );
+      return {
+        ...r,
+        note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
+        branch: branchName || "Outside Assigned Branch",
+      };
+    });
+
+    res.json(records);
+  } catch (err) {
+    console.error("❌ Error in GET /attendance/user/:userId:", err);
+    res.status(500).json({ message: "Failed to fetch attendance records" });
+  }
+});
 // ✅ GET: Is User Already Punched In/Out Today?
 router.get("/today", authMiddleware, async (req, res) => {
   try {
