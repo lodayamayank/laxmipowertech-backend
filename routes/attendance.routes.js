@@ -696,7 +696,85 @@ router.get('/summary', authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Failed to generate summary" });
   }
 });
+  // ✅ GET: One user's attendance for a date range (used by AttendanceGraphModal)
+router.get("/user/:userId", authMiddleware, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { startDate, endDate } = req.query;
 
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: "Invalid userId" });
+    }
+    if (!startDate || !endDate || isNaN(new Date(startDate)) || isNaN(new Date(endDate))) {
+      return res.status(400).json({ message: "Valid startDate and endDate are required" });
+    }
+
+    // --- Authorization: self, admin/supervisor, or the user's reporting manager ---
+    const isSelf = String(req.user.id) === String(userId);
+    const privileged = ["admin", "supervisor"].includes(req.user.role);
+    if (!isSelf && !privileged) {
+      const reportsToMe = await User.exists({
+        _id: userId,
+        reportingManager: req.user.id,
+      });
+      if (!reportsToMe) {
+        return res.status(403).json({ message: "Not allowed to view this user's attendance" });
+      }
+    }
+
+    const filterStart = new Date(startDate);
+    filterStart.setHours(0, 0, 0, 0);
+    const filterEnd = new Date(endDate);
+    filterEnd.setHours(23, 59, 59, 999);
+
+    // Notes are "YYYY-MM-DD" strings; pad the range by a day
+    const dayKey = (d) => d.toISOString().split("T")[0];
+    const noteFrom = dayKey(new Date(filterStart.getTime() - 24 * 60 * 60 * 1000));
+    const noteTo = dayKey(new Date(filterEnd.getTime() + 24 * 60 * 60 * 1000));
+
+    const [rawRecords, notes, branches] = await Promise.all([
+      Attendance.find({
+        user: userId,
+        createdAt: { $gte: filterStart, $lte: filterEnd },
+      })
+        .sort({ createdAt: -1 })
+        .populate("user", "name role email employeeId assignedBranches")
+        .populate("leaveId", "type")
+        .lean(),
+      AttendanceNote.find({
+        userId,
+        date: { $gte: noteFrom, $lte: noteTo },
+      }).lean(),
+      Branch.find().lean(),
+    ]);
+
+    const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
+    const branchIdToName = new Map(branches.map((b) => [b._id.toString(), b.name]));
+
+    // Same response shape as GET /attendance, so the frontend needs no other change
+    const records = rawRecords.map((r) => {
+      const dateKey = dayKey(new Date(r.createdAt));
+      const branchName =
+        (r.branch && branchIdToName.get(r.branch.toString())) ||
+        findBranchForPunch(
+          Number(r.lat),
+          Number(r.lng),
+          r.user?.assignedBranches || [],
+          branches
+        );
+      return {
+        ...r,
+        note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
+        branch: branchName || "Outside Assigned Branch",
+      };
+    });
+
+    res.json(records);
+  } catch (err) {
+    console.error("❌ Error in GET /attendance/user/:userId:", err);
+    res.status(500).json({ message: "Failed to fetch attendance records" });
+  }
+});
 // ✅ GET: Is User Already Punched In/Out Today?
 router.get("/today", authMiddleware, async (req, res) => {
   try {

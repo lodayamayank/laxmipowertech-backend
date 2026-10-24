@@ -30,7 +30,7 @@ router.get('/calculate', authMiddleware, async (req, res) => {
       computedAt = cache.computedAt;
     } else {
       // No cache yet — compute live and store it for next time
-      const result = await calculateSalaryForPeriod({ month, year, page: 1, limit: 10000 });
+      const result = await calculateSalaryForPeriod({ month, year, all: true });
       employees = result.data;
       computedAt = new Date();
       // Store in background — don't await so response is not delayed
@@ -68,7 +68,7 @@ router.post('/recalculate', authMiddleware, async (req, res) => {
     const month = parseInt(req.body.month) || currentDate.getMonth() + 1;
     const year = parseInt(req.body.year) || currentDate.getFullYear();
 
-    const result = await calculateSalaryForPeriod({ month, year, page: 1, limit: 10000 });
+    const result = await calculateSalaryForPeriod({ month, year, all: true });
     const employees = result.data;
     const computedAt = new Date();
 

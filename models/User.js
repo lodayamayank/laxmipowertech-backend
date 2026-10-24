@@ -51,7 +51,13 @@ const userSchema = new mongoose.Schema(
     standardDailyHours: { type: Number, default: 9 },
     overtimeRateMultiplier: { type: Number, default: 1.0 },
     otherAmount: { type: Number, default: 0 },
-    otherAmountType: { type: String, enum: ['earning', 'deduction'], default: 'earning' },
+        otherAmounts: [
+      {
+        label: { type: String, required: true, trim: true, maxlength: 100 },
+        amount: { type: Number, required: true, min: 0 },
+        type: { type: String, enum: ['earning', 'deduction'], default: 'earning' },
+      },
+    ],
   },
   { timestamps: true }
 );

@@ -1,5 +1,14 @@
 import mongoose from 'mongoose';
 
+const otherAmountItem = new mongoose.Schema(
+  {
+    label: { type: String, trim: true },
+    amount: { type: Number, min: 0 },
+    type: { type: String, enum: ['earning', 'deduction'] },
+  },
+  { _id: false }
+);
+
 const salarySlipSchema = new mongoose.Schema(
   {
     // Employee Reference
@@ -41,6 +50,7 @@ const salarySlipSchema = new mongoose.Schema(
       overtimeRateMultiplier: Number,
       otherAmount: Number,
       otherAmountType: String,
+      otherAmounts: { type: [otherAmountItem], default: [] },
     },
     
     // Attendance Summary
@@ -100,6 +110,10 @@ const salarySlipSchema = new mongoose.Schema(
       multiplier: Number,
       total: Number,
     },
+
+    otherAmounts: { type: [otherAmountItem], default: [] },
+    otherEarnings: { type: Number, default: 0 },
+    otherDeductions: { type: Number, default: 0 },
 
     otherAmount: { type: Number, default: 0 },
     otherAmountType: { type: String, enum: ['earning', 'deduction'], default: 'earning' },
