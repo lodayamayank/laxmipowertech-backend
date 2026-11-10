@@ -64,5 +64,7 @@ const projectSchema = new mongoose.Schema({
   branches: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }],
   buildings: [buildingSchema], // Backward compatible - existing structure
 }, { timestamps: true });
+// models/Project.js
+projectSchema.index({ createdAt: -1 });
 
 export default mongoose.model('Project', projectSchema);

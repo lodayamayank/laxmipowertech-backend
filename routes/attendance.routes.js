@@ -6,15 +6,14 @@ import upload from '../config/multer.js';
 import User from '../models/User.js';
 import SupervisorAttendanceCode from '../models/SupervisorAttendanceCode.js';
 import mongoose from 'mongoose';
-import axios from 'axios'; //  For reverse geocoding
+import axios from 'axios'; // For reverse geocoding
 import cloudinary from '../config/cloudinary.js';
 import fs from 'fs';
 import Leave from '../models/Leave.js';
-import Branch from '../models/Branch.js';
 import {
   findBranchForPunch,
   findNearestAssignedBranch,
-} from "../utils/branchMatching.js";
+} from '../utils/branchMatching.js';
 import AttendanceNote from '../models/AttendanceNote.js';
 import {
   resolveCapturedAt,
@@ -22,143 +21,148 @@ import {
   isDuplicateClientIdError,
   readClientId,
 } from '../utils/offlineSync.js';
+import { getBranches } from '../utils/branchCache.js';
 
 const router = express.Router();
 
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+
 const generateDailyCode = () => String(randomInt(100000, 1000000));
 
+// Midnight today in India, as a UTC Date (00:00 IST = 18:30 UTC previous day).
 const getServerDay = () => {
-  const now = new Date();
-
-  const indiaDateParts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Kolkata",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(now);
-
-  const year = Number(
-    indiaDateParts.find((part) => part.type === "year").value
-  );
-
-  const month = Number(
-    indiaDateParts.find((part) => part.type === "month").value
-  );
-
-  const day = Number(indiaDateParts.find((part) => part.type === "day").value);
-
-  // Midnight in India represented as a UTC Date.
-  // 00:00 IST = 18:30 UTC of the previous day.
-  return new Date(Date.UTC(year, month - 1, day) - 5.5 * 60 * 60 * 1000);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (type) => Number(parts.find((p) => p.type === type).value);
+  return new Date(Date.UTC(get('year'), get('month') - 1, get('day')) - IST_OFFSET_MS);
 };
 
-const formatDateKey = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+// IST calendar key (YYYY-MM-DD); independent of server timezone.
+const formatDateKey = (date) =>
+  new Date(date.getTime() + IST_OFFSET_MS).toISOString().slice(0, 10);
+
+// UTC calendar key, used for notes and the legacy per-day grouping.
+const dayKey = (d) => new Date(d).toISOString().split('T')[0];
+
+// Tiny in-memory TTL cache (per server instance, capped at 200 entries).
+// Cleared on every attendance write so dashboards never show stale data for long.
+const memo = new Map();
+const cached = async (key, ttlMs, fn) => {
+  const hit = memo.get(key);
+  if (hit && hit.exp > Date.now()) return hit.value;
+  const value = await fn();
+  if (memo.size >= 200) memo.delete(memo.keys().next().value);
+  memo.set(key, { value, exp: Date.now() + ttlMs });
+  return value;
 };
 
+// Serve Cloudinary selfies compressed (applied at delivery, not at upload).
+const optimizeSelfie = (url) =>
+  url && url.includes('/upload/') && !url.includes('/upload/q_auto')
+    ? url.replace('/upload/', '/upload/q_auto:good,f_auto/')
+    : url;
+
+// Atomic upsert: no find/create/retry dance, no delete on the hot path
+// (old codes are removed by the TTL index on SupervisorAttendanceCode.date).
 const findOrCreateSupervisorCode = async (supervisorId, branchId, date) => {
-  // Remove codes from previous days.
-  await SupervisorAttendanceCode.deleteMany({
-    date: { $lt: date },
-  });
-
-  const query = {
-    supervisor: supervisorId,
-    branch: branchId,
-    date,
-  };
-
-  // Return today's existing code if it already exists.
-  const existing = await SupervisorAttendanceCode.findOne(query).lean();
-
-  if (existing) {
-    return existing;
-  }
-
-  // Create a code only when today's code does not exist.
+  const query = { supervisor: supervisorId, branch: branchId, date };
   try {
-    return await SupervisorAttendanceCode.create({
-      ...query,
-      code: generateDailyCode(),
-    });
+    return await SupervisorAttendanceCode.findOneAndUpdate(
+      query,
+      { $setOnInsert: { code: generateDailyCode() } },
+      { upsert: true, new: true, lean: true }
+    );
   } catch (error) {
-    // Another request may have created today's code at the same time.
-    if (error?.code !== 11000) {
-      throw error;
-    }
-
-    const createdByConcurrentRequest = await SupervisorAttendanceCode.findOne(
-      query
-    ).lean();
-
-    if (createdByConcurrentRequest) {
-      return createdByConcurrentRequest;
-    }
-
-    throw error;
+    if (error?.code !== 11000) throw error;
+    return SupervisorAttendanceCode.findOne(query).lean(); // lost the upsert race
   }
 };
 
-// Admin must type this exact phrase to confirm a bulk delete. Kept in sync
-// with the matching literal in AdminDeleteAttendance.jsx on the frontend.
+// Must match the literal in AdminDeleteAttendance.jsx on the frontend.
 const DELETE_CONFIRMATION_PHRASE = 'DELETE ATTENDANCE RECORDS';
 
-// Cloudinary secure_urls look like
-// https://res.cloudinary.com/<cloud>/image/upload/v169.../laxmipowertech/selfies/<id>.jpg
-// The public_id (needed to delete the asset) is the folder+filename with the
-// version segment and extension stripped off.
+// Cloudinary secure_url -> public_id (folder + filename, no version/extension).
 const extractCloudinaryPublicId = (url) => {
   if (!url || typeof url !== 'string') return null;
-  const match = url.match(
- /\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/
-  );
+  const match = url.match(/\/upload\/(?:v\d+\/)?([^?]+)\.[a-zA-Z0-9]+(?:\?.*)?$/);
   return match ? match[1] : null;
 };
 
-// Resolve a startDate/endDate query pair into a [00:00:00, 23:59:59] range.
-// A missing endDate collapses the range onto startDate alone (single-day delete).
+// startDate/endDate -> [00:00:00, 23:59:59]; missing endDate = single day.
 const resolveDeleteRange = (startDate, endDate) => {
   if (!startDate || isNaN(new Date(startDate))) {
     return { error: 'A valid startDate is required' };
   }
-
   const rangeStart = new Date(startDate);
   rangeStart.setHours(0, 0, 0, 0);
 
   const rangeEnd =
-    endDate && !isNaN(new Date(endDate))
-      ? new Date(endDate)
-      : new Date(startDate);
+    endDate && !isNaN(new Date(endDate)) ? new Date(endDate) : new Date(startDate);
   rangeEnd.setHours(23, 59, 59, 999);
 
-  if (rangeEnd < rangeStart) {
-    return { error: 'endDate cannot be before startDate' };
-  }
-
+  if (rangeEnd < rangeStart) return { error: 'endDate cannot be before startDate' };
   return { rangeStart, rangeEnd };
 };
 
-// Drop a multer temp file we are not going to use (early return / error path).
+// Drop a multer temp file we are not going to use.
 const discardUpload = (file) => {
   if (!file?.path) return;
   try {
     fs.unlinkSync(file.path);
   } catch {
-    /* already gone – nothing to clean up */
+    /* already gone */
   }
 };
 
-// ✅ PUNCH IN/OUT
+// Reverse geocode with a hard timeout; never throws.
+const geocode = async (lat, lng) => {
+  const fallback = `Lat: ${lat}, Lng: ${lng}`;
+  try {
+    const r = await axios.get('https://nominatim.openstreetmap.org/reverse', {
+      params: { format: 'json', lat: Number(lat), lon: Number(lng) },
+      headers: { 'User-Agent': 'LaxmiPowertechApp/1.0' },
+      timeout: 2500,
+    });
+    return r.data?.display_name || fallback;
+  } catch (error) {
+    console.error('Reverse geocoding failed:', error.message);
+    return fallback;
+  }
+};
+
+// Shared by GET / and GET /user/:userId. Attaches note + resolved branch name.
+const enrichRecords = (rawRecords, userOf, notesMap, branchMap, branches) =>
+  rawRecords.map((r) => {
+    const user = userOf(r);
+    const dk = dayKey(r.createdAt);
+    const branchName =
+      (r.branch && branchMap.get(String(r.branch))?.name) ||
+      findBranchForPunch(Number(r.lat), Number(r.lng), user?.assignedBranches || [], branches);
+    return {
+      ...r,
+      user,
+      selfieUrl: optimizeSelfie(r.selfieUrl),
+      note: notesMap.get(`${user?._id}_${dk}`) || '',
+      branch: branchName || 'Outside Assigned Branch',
+    };
+  });
+
+/* -------------------------------------------------------------------------- */
+/* POST /punch                                                                */
+/* -------------------------------------------------------------------------- */
+
 router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) => {
-  console.log('🔥 HIT /api/attendance/punch route');
   try {
     const { punchType, lat, lng } = req.body;
-    console.log("REQ BODY:", req.body);
-    console.log("REQ FILE:", req.file);
-    console.log("REQ USER:", req.user);
 
     if (!['in', 'out'].includes(punchType)) {
       discardUpload(req.file);
@@ -172,274 +176,197 @@ router.post('/punch', authMiddleware, upload.single('selfie'), async (req, res) 
       return res.status(400).json({ message: 'Selfie is required' });
     }
 
-    // Offline replay: if this exact punch already landed, return it instead of
-    // recording a second one. Checked before the Cloudinary upload so a retry
-    // does not re-upload the selfie.
+    // Offline replay: return the original punch before re-uploading the selfie.
     const clientId = readClientId(req.body);
     const existing = await findExistingByClientId(Attendance, clientId);
     if (existing) {
       discardUpload(req.file);
-      console.log(`↩️  Duplicate punch replay for clientId=${clientId}, returning original`);
-      return res.status(200).json({ message: 'Punch already recorded', attendance: existing, duplicate: true });
+      return res
+        .status(200)
+        .json({ message: 'Punch already recorded', attendance: existing, duplicate: true });
     }
 
-    // An offline punch carries the time it was taken on the device; a live
-    // punch has no capturedAt and falls back to the server clock.
+    // Offline punches carry the device time; live punches use the server clock.
     const { date: punchedAt, backdated } = resolveCapturedAt(req.body.capturedAt);
 
-    // ✅ Reverse geocode
-    let location = `Lat: ${lat}, Lng: ${lng}`;
-    try {
-      const geoRes = await axios.get("https://nominatim.openstreetmap.org/reverse", {
-        params: { format: "json", lat: Number(lat), lon: Number(lng) },
-        headers: { "User-Agent": "LaxmiPowertechApp/1.0" }
-      });
-      if (geoRes.data?.display_name) {
-        location = geoRes.data.display_name;
-      }
-    } catch (error) {
-      console.error("Reverse geocoding failed:", error.message);
-    }
-
-    // ✅ Upload selfie
-    let selfieUrl = "";
+    // Upload without transformations (faster); compression happens at delivery.
+    let selfieUrl;
     try {
       const result = await cloudinary.uploader.upload(req.file.path, {
-        folder: "laxmipowertech/selfies",
+        folder: 'laxmipowertech/selfies',
         public_id: `${req.user.id}_${Date.now()}`,
-        // Cloudinary's perceptual-quality algorithm re-encodes the image at
-        // the smallest size that looks the same as the original — this runs
-        // once at upload time, so the stored file (and secure_url) is already
-        // the compressed version. "auto:good" biases toward preserving
-        // quality over squeezing out the last few KB.
-        quality: "auto:good",
       });
       selfieUrl = result.secure_url;
-      fs.unlinkSync(req.file.path); // clean up
     } catch (uploadErr) {
-      console.error("Cloudinary upload failed:", uploadErr);
+      console.error('Cloudinary upload failed:', uploadErr);
+      return res.status(500).json({ error: 'Selfie upload failed', details: uploadErr.message });
+    } finally {
       discardUpload(req.file);
-      return res.status(500).json({ error: "Selfie upload failed", details: uploadErr.message });
     }
 
-    // ✅ Save attendance
+    let attendance;
     try {
-      const attendance = new Attendance({
+      attendance = new Attendance({
         user: req.user.id,
         punchType,
         lat: Number(lat),
         lng: Number(lng),
-        location,
+        location: `Lat: ${lat}, Lng: ${lng}`, // address is filled in after responding
         selfieUrl,
         markedBy: 'Selfie',
         date: punchedAt,
         ...(clientId ? { clientId } : {}),
         syncedOffline: backdated,
       });
-
       await attendance.save();
-      return res.status(201).json({ message: "Punch recorded", attendance });
     } catch (saveErr) {
-      // Two replays raced: the loser hit the unique clientId index. The punch
-      // exists, so this is a success from the client's point of view.
+      // Racing replay hit the unique clientId index: the punch exists, so succeed.
       if (isDuplicateClientIdError(saveErr)) {
         const winner = await findExistingByClientId(Attendance, clientId);
         if (winner) {
-          return res.status(200).json({ message: 'Punch already recorded', attendance: winner, duplicate: true });
+          return res
+            .status(200)
+            .json({ message: 'Punch already recorded', attendance: winner, duplicate: true });
         }
       }
-      console.error("DB save failed:", saveErr);
-      return res.status(500).json({ error: "Failed to save attendance", details: saveErr.message });
+      console.error('DB save failed:', saveErr);
+      return res.status(500).json({ error: 'Failed to save attendance', details: saveErr.message });
     }
+
+    memo.clear();
+    res.status(201).json({ message: 'Punch recorded', attendance });
+
+    // Fire-and-forget: patch the readable address in after the response is sent.
+    geocode(lat, lng).then((location) =>
+      Attendance.updateOne({ _id: attendance._id }, { location }).catch(() => {})
+    );
   } catch (err) {
-    console.error("🔥 Punch route fatal error:", err);
-    res.status(500).json({ error: "Punch route failed", details: err.message });
+    console.error('Punch route fatal error:', err);
+    discardUpload(req.file);
+    res.status(500).json({ error: 'Punch route failed', details: err.message });
   }
 });
 
-// ✅ GET: Today's fallback attendance code for the logged-in supervisor
-router.get("/supervisor-codes", authMiddleware, async (req, res) => {
+/* -------------------------------------------------------------------------- */
+/* Supervisor fallback codes                                                  */
+/* -------------------------------------------------------------------------- */
+
+// GET: today's fallback attendance code for the logged-in supervisor
+router.get('/supervisor-codes', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== "supervisor") {
-      return res.status(403).json({
-        message: "Only supervisors can access attendance codes",
-      });
+    if (req.user.role !== 'supervisor') {
+      return res.status(403).json({ message: 'Only supervisors can access attendance codes' });
     }
 
     const { lat, lng } = req.query || {};
-
-    if (
-      lat === undefined ||
-      lat === null ||
-      lat === "" ||
-      lng === undefined ||
-      lng === null ||
-      lng === ""
-    ) {
-      return res.status(400).json({
-        message: "Valid location is required",
-        codes: [],
-      });
+    if (lat === undefined || lat === null || lat === '' || lng === undefined || lng === null || lng === '') {
+      return res.status(400).json({ message: 'Valid location is required', codes: [] });
     }
 
     const latitude = Number(lat);
     const longitude = Number(lng);
-
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return res.status(400).json({
-        message: "Invalid location coordinates",
-        codes: [],
-      });
+      return res.status(400).json({ message: 'Invalid location coordinates', codes: [] });
     }
 
-    const supervisor = await User.findById(req.user.id)
-      .select("assignedBranches")
-      .populate("assignedBranches", "name lat lng radius")
-      .lean();
+    // Branches come from the cache instead of populate().
+    const [{ map: branchMap }, supervisor] = await Promise.all([
+      getBranches(),
+      User.findById(req.user.id).select('assignedBranches').lean(),
+    ]);
 
-    if (!supervisor) {
-      return res.status(404).json({ message: "Supervisor not found" });
-    }
+    if (!supervisor) return res.status(404).json({ message: 'Supervisor not found' });
 
-    const assignedBranches = supervisor.assignedBranches || [];
-    if (!assignedBranches.length) {
-      return res.json({ codes: [] });
-    }
+    const assignedBranches = (supervisor.assignedBranches || [])
+      .map((id) => branchMap.get(String(id)))
+      .filter(Boolean);
+    if (!assignedBranches.length) return res.json({ codes: [] });
 
-    const matchedBranch = findNearestAssignedBranch(
-      latitude,
-      longitude,
-      assignedBranches,
-      assignedBranches
-    );
-
+    const matchedBranch = findNearestAssignedBranch(latitude, longitude, assignedBranches, assignedBranches);
     if (!matchedBranch) {
       return res.status(403).json({
-        message: "You are not within any of your assigned branch locations.",
+        message: 'You are not within any of your assigned branch locations.',
         codes: [],
       });
     }
 
     const today = getServerDay();
-    const dateKey = formatDateKey(today);
-    const record = await findOrCreateSupervisorCode(
-      req.user.id,
-      matchedBranch._id,
-      today
-    );
+    const record = await findOrCreateSupervisorCode(req.user.id, matchedBranch._id, today);
 
     return res.json({
       codes: [
         {
           branchId: matchedBranch._id.toString(),
-          branchName: matchedBranch.name || "",
+          branchName: matchedBranch.name || '',
           code: record.code,
-          date: dateKey,
+          date: formatDateKey(today),
         },
       ],
     });
   } catch (error) {
-    console.error("Supervisor attendance codes error:", error);
-    return res
-      .status(500)
-      .json({ message: "Failed to retrieve attendance codes" });
+    console.error('Supervisor attendance codes error:', error);
+    return res.status(500).json({ message: 'Failed to retrieve attendance codes' });
   }
 });
 
-// ✅ POST: Attendance punch using a supervisor's daily fallback code
-router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req, res) => {
-  console.log("🔥 HIT /api/attendance/supervisor-code-punch");
-
+// POST: attendance punch using a supervisor's daily fallback code
+router.post('/supervisor-code-punch', authMiddleware, upload.none(), async (req, res) => {
   try {
     const { code, punchType, lat, lng } = req.body || {};
 
-    if (!["in", "out"].includes(punchType)) {
-      return res.status(400).json({ message: "Invalid or missing punch type" });
+    if (!['in', 'out'].includes(punchType)) {
+      return res.status(400).json({ message: 'Invalid or missing punch type' });
     }
-
-    if (typeof code !== "string" || !/^\d{6}$/.test(code)) {
-      return res.status(400).json({ message: "Code must be a 6-digit number" });
+    if (typeof code !== 'string' || !/^\d{6}$/.test(code)) {
+      return res.status(400).json({ message: 'Code must be a 6-digit number' });
     }
-
-    if (
-      lat === undefined ||
-      lat === null ||
-      lat === "" ||
-      lng === undefined ||
-      lng === null ||
-      lng === ""
-    ) {
-      return res.status(400).json({ message: "Location is required" });
+    if (lat === undefined || lat === null || lat === '' || lng === undefined || lng === null || lng === '') {
+      return res.status(400).json({ message: 'Location is required' });
     }
 
     const latitude = Number(lat);
     const longitude = Number(lng);
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      return res.status(400).json({ message: "Invalid location coordinates" });
+      return res.status(400).json({ message: 'Invalid location coordinates' });
     }
 
-    const user = await User.findById(req.user.id)
-      .select("assignedBranches")
-      .populate("assignedBranches");
+    const [{ list: branches, map: branchMap }, user] = await Promise.all([
+      getBranches(),
+      User.findById(req.user.id).select('assignedBranches').lean(),
+    ]);
+    if (!user) return res.status(404).json({ message: 'User not found' });
 
-    if (!user) {
-      return res.status(404).json({ message: "User not found" });
-    }
+    const assignedBranches = (user.assignedBranches || [])
+      .map((id) => branchMap.get(String(id)))
+      .filter(Boolean);
 
-    const assignedBranches = user.assignedBranches || [];
-
-    const branches = await Branch.find().lean();
-
-    const detectedBranch = findNearestAssignedBranch(
-      latitude,
-      longitude,
-      assignedBranches,
-      branches
-    );
-
-    console.log("Supervisor code punch details:", {
-      userId: req.user.id,
-      detectedBranch: detectedBranch
-        ? { id: detectedBranch._id.toString(), name: detectedBranch.name }
-        : null,
-      punchType,
-    });;
-
+    const detectedBranch = findNearestAssignedBranch(latitude, longitude, assignedBranches, branches);
     if (!detectedBranch) {
-      return res.status(400).json({
-        message: "You are outside your assigned branch.",
-      });
+      return res.status(400).json({ message: 'You are outside your assigned branch.' });
     }
 
     const today = getServerDay();
-    const matchingCode = await SupervisorAttendanceCode.findOne({
-      branch: detectedBranch._id,
-      date: today,
-      code,
-    })
-    .populate("supervisor", "name username")
-    .lean();  
+    const tomorrow = new Date(today.getTime() + DAY_MS);
 
-    console.log("Supervisor attendance code matched:", Boolean(matchingCode));
+    // Independent lookups run in parallel; results are checked in the original order.
+    const [matchingCode, existingAttendance] = await Promise.all([
+      SupervisorAttendanceCode.findOne({ branch: detectedBranch._id, date: today, code })
+        .populate('supervisor', 'name username')
+        .lean(),
+      Attendance.findOne({
+        user: req.user.id,
+        punchType,
+        date: { $gte: today, $lt: tomorrow },
+      })
+        .select('_id')
+        .lean(),
+    ]);
 
     if (!matchingCode) {
-      return res.status(400).json({
-        message: "Invalid or expired supervisor code.",
-      });
+      return res.status(400).json({ message: 'Invalid or expired supervisor code.' });
     }
-
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const existingAttendance = await Attendance.findOne({
-      user: req.user.id,
-      punchType,
-      date: { $gte: today, $lt: tomorrow },
-    }).lean();
-
     if (existingAttendance) {
-      return res.status(400).json({
-        message: `Punch ${punchType} has already been recorded today.`,
-      });
+      return res.status(400).json({ message: `Punch ${punchType} has already been recorded today.` });
     }
 
     const attendance = await Attendance.create({
@@ -451,27 +378,31 @@ router.post("/supervisor-code-punch", authMiddleware, upload.none(), async (req,
       date: new Date(),
       selfieUrl: null,
       markedBy: `Marked by Supervisor code - ${
-      matchingCode.supervisor?.name || matchingCode.supervisor?.username || "Supervisor"
+        matchingCode.supervisor?.name || matchingCode.supervisor?.username || 'Supervisor'
       }`,
     });
 
-    return res.status(201).json({
-      message: "Attendance recorded using supervisor code",
-      attendance,
-    });
+    memo.clear();
+    return res.status(201).json({ message: 'Attendance recorded using supervisor code', attendance });
   } catch (error) {
-    console.error("Supervisor code punch error:", error);
-    return res.status(500).json({ message: "Failed to record attendance" });
+    console.error('Supervisor code punch error:', error);
+    return res.status(500).json({ message: 'Failed to record attendance' });
   }
 });
 
-// ✅ GET: My Attendance History (Punches + Leaves)
-// ✅ GET: My Attendance History (with leave info)
+/* -------------------------------------------------------------------------- */
+/* Reads                                                                      */
+/* -------------------------------------------------------------------------- */
+
+// GET: my attendance history. Capped; pass ?limit= (max 500) for more.
 router.get('/my', authMiddleware, async (req, res) => {
   try {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
     const records = await Attendance.find({ user: req.user.id })
       .sort({ createdAt: -1 })
-      .populate('leaveId', 'type startDate endDate'); // 🔑 populate leave type
+      .limit(limit)
+      .populate('leaveId', 'type startDate endDate')
+      .lean();
 
     res.json(records);
   } catch (err) {
@@ -480,110 +411,172 @@ router.get('/my', authMiddleware, async (req, res) => {
   }
 });
 
-
-router.get("/", authMiddleware, async (req, res) => {
+// GET: attendance records for a role/project over a date range (admin tables)
+router.get('/', authMiddleware, async (req, res) => {
   try {
     const { role, project, month, year, startDate, endDate } = req.query;
 
-    // --- Default date range ---
     let filterStart, filterEnd;
-
     if (startDate && endDate && !isNaN(new Date(startDate)) && !isNaN(new Date(endDate))) {
       filterStart = new Date(startDate);
       filterStart.setHours(0, 0, 0, 0);
-
       filterEnd = new Date(endDate);
       filterEnd.setHours(23, 59, 59, 999);
     } else {
       const monthNum = parseInt(month) || new Date().getMonth() + 1;
       const yearNum = parseInt(year) || new Date().getFullYear();
-
       filterStart = new Date(yearNum, monthNum - 1, 1);
       filterEnd = new Date(yearNum, monthNum, 0, 23, 59, 59);
     }
 
-    // --- User filter ---
     const userQuery = {};
     if (role) userQuery.role = String(role).toLowerCase();
-
     if (project && mongoose.Types.ObjectId.isValid(project)) {
       userQuery.project = new mongoose.Types.ObjectId(project);
     }
 
-    const users = await User.find(userQuery).populate("assignedBranches").lean();
-    if (!users.length) {
-      return res.json([]); // no users matched filters
-    }
+    // Only the fields the response needs; branches come from the cache.
+    const [users, { list: branches, map: branchMap }] = await Promise.all([
+      User.find(userQuery).select('name role email employeeId assignedBranches').lean(),
+      getBranches(),
+    ]);
+    if (!users.length) return res.json([]);
 
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
     const userIds = users.map((u) => u._id);
 
-    // --- Attendance records ---
-    let records = await Attendance.find({
-      user: { $in: userIds },
-      createdAt: { $gte: filterStart, $lte: filterEnd },
-    })
-      .sort({ createdAt: -1 })
-      .populate("user", "name role email employeeId assignedBranches")
-      .populate("leaveId", "type")
-      .lean();
-
-    // --- Notes ---
-    const keys = records
-      .filter((r) => r.user?._id)
-      .map((r) => ({
-        userId: r.user._id,
-        date: new Date(r.createdAt).toISOString().split("T")[0],
-      }));
-
-    const notes = await AttendanceNote.find({
-      $or: keys.map((k) => ({ userId: k.userId, date: k.date })),
-    }).lean();
+    // Notes are fetched as one range query (not one $or clause per record).
+    const [rawRecords, notes] = await Promise.all([
+      Attendance.find({ user: { $in: userIds }, createdAt: { $gte: filterStart, $lte: filterEnd } })
+        .sort({ createdAt: -1 })
+        .populate('leaveId', 'type')
+        .lean(),
+      AttendanceNote.find({
+        userId: { $in: userIds },
+        date: {
+          $gte: dayKey(new Date(filterStart.getTime() - DAY_MS)),
+          $lte: dayKey(new Date(filterEnd.getTime() + DAY_MS)),
+        },
+      }).lean(),
+    ]);
 
     const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
 
-    // --- Branches ---
-    const branches = await Branch.find().lean();
-
-    // --- Final enrich ---
-    const branchIdToName = new Map(
-      branches.map((b) => [b._id.toString(), b.name])
+    res.json(
+      enrichRecords(rawRecords, (r) => userMap.get(String(r.user)), notesMap, branchMap, branches)
     );
-    records = records.map((r) => {
-      const dateKey = new Date(r.createdAt).toISOString().split("T")[0];
-      const branchName =
-        (r.branch && branchIdToName.get(r.branch.toString())) ||
-        findBranchForPunch(
-          Number(r.lat),
-          Number(r.lng),
-          r.user?.assignedBranches || [],
-          branches
-        );
-      return {
-        ...r,
-        note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
-        branch: branchName || "Outside Assigned Branch",
-      };
-    });
-
-    res.json(records);
   } catch (err) {
-    console.error("❌ Error in GET /attendance:", err);
-    res.status(500).json({
-      message: "Failed to fetch attendance records",
-      error: err.message,
-      stack: err.stack,
-    });
+    console.error('Error in GET /attendance:', err);
+    res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
 
-// ✅ GET: Attendance Summary (Aggregated per User)
+/* -------------------------------------------------------------------------- */
+/* GET /summary                                                               */
+/* -------------------------------------------------------------------------- */
+
+// 2 queries total (users + one aggregation) instead of one query per user.
+// Days are bucketed in IST. Move this into services/attendanceSummary.js if reused.
+ export const buildSummary = async ({ userQuery, startDate, endDateExclusive, days }) => {
+  const users = await User.find(userQuery).select('name employeeId').lean();
+  if (!users.length) return [];
+
+  const stats = new Map(
+    users.map((u) => [
+      String(u._id),
+      {
+        present: 0,
+        absent: 0,
+        halfDay: 0,
+        weekOff: 0,
+        paidLeave: 0,
+        unpaidLeave: 0,
+        sickLeave: 0,
+        casualLeave: 0,
+        overtime: 0,
+        rows: 0, // days that have at least one record
+      },
+    ])
+  );
+
+  const isType = (...types) => ({ $in: ['$punchType', types] });
+  const when = (cond, then, other = null) => ({ $cond: [cond, then, other] });
+
+  // Collapse all punches of a user-day into one row inside MongoDB.
+  const dayRows = await Attendance.aggregate([
+    {
+      $match: {
+        user: { $in: users.map((u) => u._id) },
+        date: { $gte: startDate, $lt: endDateExclusive },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          user: '$user',
+          day: { $dateToString: { format: '%Y-%m-%d', date: '$date', timezone: 'Asia/Kolkata' } },
+        },
+        hasLeave: { $max: isType('leave', 'paidleave', 'unpaidleave') },
+        paidFlag: { $max: isType('paidleave') },
+        leaveId: { $max: when(isType('leave'), '$leaveId') },
+        inCount: { $sum: when(isType('in'), 1, 0) },
+        outCount: { $sum: when(isType('out'), 1, 0) },
+        firstIn: { $min: when(isType('in'), '$createdAt') },
+        lastOut: { $max: when(isType('out'), '$createdAt') },
+      },
+    },
+    // Only leave rows carry a leaveId, so this join is tiny.
+    { $lookup: { from: Leave.collection.name, localField: 'leaveId', foreignField: '_id', as: 'leave' } },
+    { $addFields: { leaveType: { $arrayElemAt: ['$leave.type', 0] } } },
+    { $project: { leave: 0 } },
+  ]);
+
+  // Same classification rules as before, over the small grouped result.
+  for (const r of dayRows) {
+    const s = stats.get(String(r._id.user));
+    if (!s) continue;
+    s.rows++;
+
+    if (r.hasLeave) {
+      const t = r.leaveType || (r.paidFlag ? 'paid' : 'unpaid');
+      if (t === 'paid') s.paidLeave++;
+      else if (t === 'sick') s.sickLeave++;
+      else if (t === 'casual') s.casualLeave++;
+      else s.unpaidLeave++;
+      continue;
+    }
+
+    if (!r.inCount && !r.outCount) {
+      s.absent++;
+      continue;
+    }
+
+    if (r.inCount && r.outCount) {
+      const minutes = Math.round((r.lastOut - r.firstIn) / 60000);
+      if (minutes >= 480) s.present++;
+      else if (minutes >= 240) s.halfDay++;
+      else s.absent++;
+      if (minutes > 540) s.overtime++;
+    } else {
+      s.halfDay++; // only an "in" or only an "out"
+    }
+  }
+
+  return users.map((u) => {
+    const { rows, ...s } = stats.get(String(u._id));
+    s.absent += days.length - rows; // days with no records at all
+    return { name: u.name, employeeId: u.employeeId || '-', ...s };
+  });
+};
+
 router.get('/summary', authMiddleware, async (req, res) => {
   try {
     const { project, role, month, year, startDate: requestedStart, endDate: requestedEnd } = req.query;
     const hasDateRange = requestedStart !== undefined || requestedEnd !== undefined;
-    let startDate;
-    let endDateExclusive;
-    let days;
+
+    // Calendar range as UTC-midnight dates: [calStart, calEndExcl).
+    let calStart;
+    let calEndExcl;
 
     if (hasDateRange) {
       const parseDateOnly = (value) => {
@@ -593,162 +586,65 @@ router.get('/summary', authMiddleware, async (req, res) => {
           ? parsed
           : null;
       };
-
-      startDate = parseDateOnly(requestedStart);
-      const inclusiveEnd = parseDateOnly(requestedEnd);
-      if (!startDate || !inclusiveEnd) {
+      const s = parseDateOnly(requestedStart);
+      const e = parseDateOnly(requestedEnd);
+      if (!s || !e) {
         return res.status(400).json({ message: 'Valid startDate and endDate in YYYY-MM-DD format are required' });
       }
-      if (startDate > inclusiveEnd) {
-        return res.status(400).json({ message: 'startDate cannot be after endDate' });
-      }
-
-      endDateExclusive = new Date(inclusiveEnd);
-      endDateExclusive.setUTCDate(endDateExclusive.getUTCDate() + 1);
-      days = [];
-      for (let day = new Date(startDate); day < endDateExclusive; day.setUTCDate(day.getUTCDate() + 1)) {
-        days.push({ key: day.toISOString().split('T')[0] });
-      }
+      if (s > e) return res.status(400).json({ message: 'startDate cannot be after endDate' });
+      calStart = s;
+      calEndExcl = new Date(e.getTime() + DAY_MS);
     } else {
       const monthNum = parseInt(month) || new Date().getMonth() + 1;
       const yearNum = parseInt(year) || new Date().getFullYear();
-
-      startDate = new Date(yearNum, monthNum - 1, 1);
-      endDateExclusive = new Date(yearNum, monthNum, 1);
-      days = Array.from({ length: new Date(yearNum, monthNum, 0).getDate() }, (_, index) => {
-        const day = new Date(yearNum, monthNum - 1, index + 1);
-        return { key: day.toISOString().split('T')[0] };
-      });
+      if (monthNum < 1 || monthNum > 12) return res.status(400).json({ message: 'Invalid month' });
+      calStart = new Date(Date.UTC(yearNum, monthNum - 1, 1));
+      calEndExcl = new Date(Date.UTC(yearNum, monthNum, 1));
     }
 
-    // Fetch users by role/project
+    const dayCount = Math.round((calEndExcl - calStart) / DAY_MS);
+    if (dayCount > 366) return res.status(400).json({ message: 'Date range cannot exceed 366 days' });
+
+    const days = Array.from({ length: dayCount }, (_, i) =>
+      new Date(calStart.getTime() + i * DAY_MS).toISOString().slice(0, 10)
+    );
+    // Query bounds are IST midnights, matching the IST day grouping above.
+    const startDate = new Date(calStart.getTime() - IST_OFFSET_MS);
+    const endDateExclusive = new Date(calEndExcl.getTime() - IST_OFFSET_MS);
+
     const userQuery = {};
-    if (role) userQuery.role = role.toLowerCase();
-    if (project && mongoose.Types.ObjectId.isValid(project)) {
-      userQuery.project = project;
-    }
+    if (role) userQuery.role = String(role).toLowerCase();
+    if (project && mongoose.Types.ObjectId.isValid(project)) userQuery.project = project;
 
-    const users = await User.find(userQuery).lean();
-    const results = [];
-
-    for (const u of users) {
-      // Fetch attendance only within the requested calendar-day range.
-      const punches = await Attendance.find({
-        user: u._id,
-        date: { $gte: startDate, $lt: endDateExclusive },
-      })
-        .populate("leaveId", "type")                // ✅ populate leaveId
-        .lean();
-
-      // Group punches per day
-      const byDay = {};
-      punches.forEach((p) => {
-        const key = new Date(p.date).toISOString().split("T")[0];
-        if (!byDay[key]) byDay[key] = [];
-        byDay[key].push(p);
-      });
-
-      // Counters
-      let present = 0,
-        absent = 0,
-        halfDay = 0,
-        weekOff = 0,
-        overtime = 0,
-        paidLeave = 0,
-        unpaidLeave = 0,
-        sickLeave = 0,
-        casualLeave = 0;
-
-      for (const { key } of days) {
-
-        const punchesToday = byDay[key] || [];
-
-        // Allow weekend attendance - no automatic week off
-
-        // ✅ Check for leave
-        const leavePunch = punchesToday.find((p) => p.punchType === "leave");
-        if (leavePunch) {
-          const leaveType = leavePunch.leaveId?.type || "unpaid";
-
-          if (leaveType === "paid") paidLeave++;
-          else if (leaveType === "unpaid") unpaidLeave++;
-          else if (leaveType === "sick") sickLeave++;
-          else if (leaveType === "casual") casualLeave++;
-          else unpaidLeave++;
-
-          continue;
-        }
-
-        // ✅ Check for present/absent
-        const ins = punchesToday
-          .filter((p) => p.punchType === "in")
-          .map((x) => new Date(x.createdAt));
-        const outs = punchesToday
-          .filter((p) => p.punchType === "out")
-          .map((x) => new Date(x.createdAt));
-
-        if (!ins.length && !outs.length) {
-          absent++;
-          continue;
-        }
-
-        if (ins.length && outs.length) {
-          const firstIn = Math.min(...ins.map((x) => x.getTime()));
-          const lastOut = Math.max(...outs.map((x) => x.getTime()));
-          const minutes = Math.round((lastOut - firstIn) / 60000);
-
-          if (minutes >= 480) present++;
-          else if (minutes >= 240) halfDay++;
-          else absent++;
-
-          if (minutes > 540) overtime++;
-        } else {
-          halfDay++;
-        }
-      }
-
-      results.push({
-        name: u.name,
-        employeeId: u.employeeId || "-",
-        present,
-        absent,
-        halfDay,
-        weekOff,
-        paidLeave,
-        unpaidLeave,
-        sickLeave,
-        casualLeave,
-        overtime,
-      });
-    }
-
+    const key = `summary:${userQuery.role || ''}|${userQuery.project || ''}|${days[0]}|${dayCount}`;
+    const results = await cached(key, 30_000, () =>
+      buildSummary({ userQuery, startDate, endDateExclusive, days })
+    );
     res.json(results);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Failed to generate summary" });
+    res.status(500).json({ message: 'Failed to generate summary' });
   }
 });
-  // ✅ GET: One user's attendance for a date range (used by AttendanceGraphModal)
-router.get("/user/:userId", authMiddleware, async (req, res) => {
+
+// GET: one user's attendance for a date range (AttendanceGraphModal)
+router.get('/user/:userId', authMiddleware, async (req, res) => {
   try {
     const { userId } = req.params;
     const { startDate, endDate } = req.query;
 
     if (!mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid userId" });
+      return res.status(400).json({ message: 'Invalid userId' });
     }
     if (!startDate || !endDate || isNaN(new Date(startDate)) || isNaN(new Date(endDate))) {
-      return res.status(400).json({ message: "Valid startDate and endDate are required" });
+      return res.status(400).json({ message: 'Valid startDate and endDate are required' });
     }
 
-    // --- Authorization: self, admin/supervisor, or the user's reporting manager ---
+    // Authorization: self, admin/supervisor, or the user's reporting manager.
     const isSelf = String(req.user.id) === String(userId);
-    const privileged = ["admin", "supervisor"].includes(req.user.role);
+    const privileged = ['admin', 'supervisor'].includes(req.user.role);
     if (!isSelf && !privileged) {
-      const reportsToMe = await User.exists({
-        _id: userId,
-        reportingManager: req.user.id,
-      });
+      const reportsToMe = await User.exists({ _id: userId, reportingManager: req.user.id });
       if (!reportsToMe) {
         return res.status(403).json({ message: "Not allowed to view this user's attendance" });
       }
@@ -759,173 +655,144 @@ router.get("/user/:userId", authMiddleware, async (req, res) => {
     const filterEnd = new Date(endDate);
     filterEnd.setHours(23, 59, 59, 999);
 
-    // Notes are "YYYY-MM-DD" strings; pad the range by a day
-    const dayKey = (d) => d.toISOString().split("T")[0];
-    const noteFrom = dayKey(new Date(filterStart.getTime() - 24 * 60 * 60 * 1000));
-    const noteTo = dayKey(new Date(filterEnd.getTime() + 24 * 60 * 60 * 1000));
+    // Notes are "YYYY-MM-DD" strings; pad the range by a day.
+    const noteFrom = dayKey(new Date(filterStart.getTime() - DAY_MS));
+    const noteTo = dayKey(new Date(filterEnd.getTime() + DAY_MS));
 
-    const [rawRecords, notes, branches] = await Promise.all([
-      Attendance.find({
-        user: userId,
-        createdAt: { $gte: filterStart, $lte: filterEnd },
-      })
+    // The user is fetched once instead of being populated on every record.
+    const [rawRecords, notes, user, { list: branches, map: branchMap }] = await Promise.all([
+      Attendance.find({ user: userId, createdAt: { $gte: filterStart, $lte: filterEnd } })
         .sort({ createdAt: -1 })
-        .populate("user", "name role email employeeId assignedBranches")
-        .populate("leaveId", "type")
+        .populate('leaveId', 'type')
         .lean(),
-      AttendanceNote.find({
-        userId,
-        date: { $gte: noteFrom, $lte: noteTo },
-      }).lean(),
-      Branch.find().lean(),
+      AttendanceNote.find({ userId, date: { $gte: noteFrom, $lte: noteTo } }).lean(),
+      User.findById(userId).select('name role email employeeId assignedBranches').lean(),
+      getBranches(),
     ]);
+    if (!user) return res.json([]);
 
     const notesMap = new Map(notes.map((n) => [`${n.userId}_${n.date}`, n.note]));
-    const branchIdToName = new Map(branches.map((b) => [b._id.toString(), b.name]));
 
-    // Same response shape as GET /attendance, so the frontend needs no other change
-    const records = rawRecords.map((r) => {
-      const dateKey = dayKey(new Date(r.createdAt));
-      const branchName =
-        (r.branch && branchIdToName.get(r.branch.toString())) ||
-        findBranchForPunch(
-          Number(r.lat),
-          Number(r.lng),
-          r.user?.assignedBranches || [],
-          branches
-        );
-      return {
-        ...r,
-        note: notesMap.get(`${r.user?._id}_${dateKey}`) || "",
-        branch: branchName || "Outside Assigned Branch",
-      };
-    });
-
-    res.json(records);
+    // Same response shape as GET /attendance.
+    res.json(enrichRecords(rawRecords, () => user, notesMap, branchMap, branches));
   } catch (err) {
-    console.error("❌ Error in GET /attendance/user/:userId:", err);
-    res.status(500).json({ message: "Failed to fetch attendance records" });
+    console.error('Error in GET /attendance/user/:userId:', err);
+    res.status(500).json({ message: 'Failed to fetch attendance records' });
   }
 });
-// ✅ GET: Is User Already Punched In/Out Today?
-router.get("/today", authMiddleware, async (req, res) => {
+
+// GET: has the user already punched in/out today (IST day)?
+router.get('/today', authMiddleware, async (req, res) => {
   try {
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const records = await Attendance.find({
+    const types = await Attendance.distinct('punchType', {
       user: req.user.id,
-      createdAt: { $gte: startOfDay },
+      createdAt: { $gte: getServerDay() },
     });
-
-    const punchedIn = records.some((r) => r.punchType === "in");
-    const punchedOut = records.some((r) => r.punchType === "out");
-
-    res.json({ punchedIn, punchedOut });
+    res.json({ punchedIn: types.includes('in'), punchedOut: types.includes('out') });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to fetch today's attendance" });
   }
 });
 
-// ✅ GET: Live Dashboard Attendance (Admin)
-router.get("/live", authMiddleware, async (req, res) => {
+// GET: live dashboard attendance (admin). Polled often, so cached for 10s.
+router.get('/live', authMiddleware, async (req, res) => {
   try {
     const { project, role, branch } = req.query;
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    // Get all attendance records for today
-    const attendanceToday = await Attendance.find({
-      createdAt: { $gte: startOfDay, $lte: endOfDay },
-    }).populate("user");
-
-    // Also fetch today's approved leaves
-    const leavesToday = await Leave.find({
-      status: "approved",
-      startDate: { $lte: endOfDay },
-      endDate: { $gte: startOfDay },
-    }).populate("user");
-
     const userQuery = {};
-    if (project) userQuery.project = project;
+    if (project && mongoose.Types.ObjectId.isValid(project)) userQuery.project = project;
     if (role) userQuery.role = role;
-    if (branch)
+    if (branch && mongoose.Types.ObjectId.isValid(branch)) {
       userQuery.assignedBranches = new mongoose.Types.ObjectId(branch);
+    }
 
-    const users = await User.find(userQuery)
-      .populate("assignedBranches")
-      .lean();
+    const key = `live:${userQuery.project || ''}|${userQuery.role || ''}|${userQuery.assignedBranches || ''}`;
+    const liveData = await cached(key, 10_000, async () => {
+      const startOfDay = getServerDay();
+      const endOfDay = new Date(startOfDay.getTime() + DAY_MS - 1);
 
-    // ✅ Load all branches from DB once
-    const branches = await Branch.find().lean();
+      const [users, { list: branches, map: branchMap }] = await Promise.all([
+        User.find(userQuery).select('name role photo assignedBranches').lean(),
+        getBranches(),
+      ]);
+      const userIds = users.map((u) => u._id);
 
-    const liveData = users.map((user) => {
-      const records = attendanceToday.filter(
-        (a) => a.user._id.toString() === user._id.toString()
-      );
+      // Only fetch data for the filtered users, with only the needed fields.
+      const [attendanceToday, leavesToday] = await Promise.all([
+        Attendance.find({ user: { $in: userIds }, createdAt: { $gte: startOfDay, $lte: endOfDay } })
+          .select('user punchType createdAt lat lng selfieUrl')
+          .sort({ createdAt: 1 })
+          .lean(),
+        Leave.find({
+          user: { $in: userIds },
+          status: 'approved',
+          startDate: { $lte: endOfDay },
+          endDate: { $gte: startOfDay },
+        })
+          .select('user type')
+          .lean(),
+      ]);
 
-      const punchIn = records.find((r) => r.punchType === "in");
-      const punchOut = records.find((r) => r.punchType === "out");
+      // Group once (O(n)) instead of filtering all records per user.
+      const punchesByUser = new Map();
+      for (const a of attendanceToday) {
+        const k = String(a.user);
+        if (!punchesByUser.has(k)) punchesByUser.set(k, []);
+        punchesByUser.get(k).push(a);
+      }
+      const leaveByUser = new Map(leavesToday.map((l) => [String(l.user), l]));
 
-      // ✅ Check leave record
-      const leaveToday = leavesToday.find(
-        (l) => l.user._id.toString() === user._id.toString()
-      );
-
-      let status = "no_punch";
-      let punchTime = null;
-      let branchName = "Outside Assigned Branch";
-      let selfieUrl = null;
-
-      if (leaveToday) {
-        status = leaveToday.type === "paid" ? "paidleave" : "unpaidleave";
-        punchTime = null;
-        branchName = "On Leave";
-        selfieUrl = null;
-      } else if (punchIn && !punchOut) {
-        status = "in";
-        punchTime = new Date(punchIn.createdAt).toLocaleTimeString("en-US", {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-        branchName =
-          findBranchForPunch(
-            Number(punchIn.lat),
-            Number(punchIn.lng),
-            user.assignedBranches || [],
-            branches
-          ) || 'Outside Assigned Branch';
-        selfieUrl = punchIn.selfieUrl;
-      } else if (punchIn && punchOut) {
-        status = 'out';
-        punchTime = new Date(punchOut.createdAt).toLocaleTimeString('en-US', {
+      const fmtTime = (d) =>
+        new Date(d).toLocaleTimeString('en-US', {
           hour: '2-digit',
           minute: '2-digit',
+          timeZone: 'Asia/Kolkata',
         });
-        branchName =
-          findBranchForPunch(
-            Number(punchOut.lat),
-            Number(punchOut.lng),
-            user.assignedBranches || [],
-            branches
-          ) || 'Outside Assigned Branch';
-        selfieUrl = punchOut.selfieUrl;
-      }
 
-      return {
-        _id: user._id,
-        name: user.name,
-        role: user.role,
-        status, // can be "in" / "out" / "paidleave" / "unpaidleave" / "no_punch"
-        punchTime,
-        branch: branchName,
-        selfieUrl,
-        avatar: user.photo || null,
-      };
+      return users.map((user) => {
+        const records = punchesByUser.get(String(user._id)) || [];
+        const punchIn = records.find((r) => r.punchType === 'in');
+        const punchOut = records.find((r) => r.punchType === 'out');
+        const leaveToday = leaveByUser.get(String(user._id));
+        const assigned = (user.assignedBranches || [])
+          .map((id) => branchMap.get(String(id)))
+          .filter(Boolean);
+        const branchOf = (p) =>
+          findBranchForPunch(Number(p.lat), Number(p.lng), assigned, branches) ||
+          'Outside Assigned Branch';
+
+        let status = 'no_punch'; // "in" | "out" | "paidleave" | "unpaidleave" | "no_punch"
+        let punchTime = null;
+        let branchName = 'Outside Assigned Branch';
+        let selfieUrl = null;
+
+        if (leaveToday) {
+          status = leaveToday.type === 'paid' ? 'paidleave' : 'unpaidleave';
+          branchName = 'On Leave';
+        } else if (punchIn && !punchOut) {
+          status = 'in';
+          punchTime = fmtTime(punchIn.createdAt);
+          branchName = branchOf(punchIn);
+          selfieUrl = optimizeSelfie(punchIn.selfieUrl);
+        } else if (punchIn && punchOut) {
+          status = 'out';
+          punchTime = fmtTime(punchOut.createdAt);
+          branchName = branchOf(punchOut);
+          selfieUrl = optimizeSelfie(punchOut.selfieUrl);
+        }
+
+        return {
+          _id: user._id,
+          name: user.name,
+          role: user.role,
+          status,
+          punchTime,
+          branch: branchName,
+          selfieUrl,
+          avatar: user.photo || null,
+        };
+      });
     });
 
     res.json(liveData);
@@ -935,83 +802,88 @@ router.get("/live", authMiddleware, async (req, res) => {
   }
 });
 
-// ✅ POST: Bulk Attendance (for Labour Management)
-router.post("/bulk", authMiddleware, async (req, res) => {
-  console.log("🔥 HIT /api/attendance/bulk route");
-  console.log("📦 Request body:", req.body);
+/* -------------------------------------------------------------------------- */
+/* POST /bulk (Labour Management)                                             */
+/* -------------------------------------------------------------------------- */
+
+// Loads existing rows once, validates in memory, writes with a single bulkWrite.
+router.post('/bulk', authMiddleware, async (req, res) => {
   try {
     const { records } = req.body;
-
     if (!Array.isArray(records) || records.length === 0) {
-      return res.status(400).json({ message: "Records array is required" });
+      return res.status(400).json({ message: 'Records array is required' });
     }
 
-    const results = [];
+    // bulkWrite skips schema validation, so check status/ids/dates here.
+    const allowedStatus = new Set(Attendance.schema.path('punchType').enumValues);
     const errors = [];
-
-    for (const record of records) {
-      const { user, branch, status, date, punchTime } = record;
-
+    const valid = [];
+    for (const r of records) {
+      const { user, branch, status, date } = r;
       if (!user || !status || !date) {
-        errors.push({ user, message: "Missing required fields" });
-        continue;
+        errors.push({ user, message: 'Missing required fields' });
+      } else if (
+        !mongoose.isValidObjectId(user) ||
+        (branch && !mongoose.isValidObjectId(branch)) ||
+        !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !allowedStatus.has(status)
+      ) {
+        errors.push({ user, message: 'Invalid user, branch, date or status' });
+      } else {
+        valid.push(r);
       }
+    }
 
-      try {
-        // in/out records are separate per direction; absent/present/half-day are one record per day
-        const startOfDay = new Date(date + "T00:00:00.000Z");
-        const endOfDay = new Date(date + "T23:59:59.999Z");
-        const dateRange = { $gte: startOfDay, $lte: endOfDay };
+    // in/out are separate per direction; other states share one slot per day.
+    const bucket = (t) => (t === 'in' || t === 'out' ? t : 'state');
+    const keyOf = (u, d, t) => `${u}|${d}|${bucket(t)}`;
+    const touched = new Map();
+    const ops = [];
 
-        // Guard: punch-out requires an existing punch-in on the same day
-        if (status === "out") {
-          const hasIn = await Attendance.findOne({
-            user,
-            date: dateRange,
-            punchType: "in",
-          }).lean();
+    if (valid.length) {
+      const dates = valid.map((r) => r.date).sort();
+      const existingDocs = await Attendance.find({
+        user: { $in: [...new Set(valid.map((r) => String(r.user)))] },
+        date: {
+          $gte: new Date(`${dates[0]}T00:00:00.000Z`),
+          $lte: new Date(`${dates[dates.length - 1]}T23:59:59.999Z`),
+        },
+        punchType: { $in: ['in', 'out', 'absent', 'present', 'half-day', 'half'] },
+      }).lean();
+
+      // Live view of the DB state, updated as we queue ops (so in/out order works in-batch).
+      const state = new Map(existingDocs.map((d) => [keyOf(d.user, dayKey(d.date), d.punchType), d]));
+
+      for (const { user, branch, status, date, punchTime } of valid) {
+        // Punch-out needs a punch-in the same day, and must be later than it.
+        if (status === 'out') {
+          const hasIn = state.get(keyOf(user, date, 'in'));
           if (!hasIn) {
-            errors.push({
-              user,
-              message:
-                "Cannot punch out without a punch in record for this date",
-            });
+            errors.push({ user, message: 'Cannot punch out without a punch in record for this date' });
             continue;
           }
-          // Also validate punch-out time is after punch-in time
-          if (punchTime && hasIn) {
-            const inTime = new Date(hasIn.punchTime || hasIn.createdAt);
-            const outTime = new Date(punchTime);
-            if (outTime <= inTime) {
-              errors.push({
-                user,
-                message: "Punch out time must be after punch in time",
-              });
-              continue;
-            }
+          if (punchTime && new Date(punchTime) <= new Date(hasIn.punchTime || hasIn.createdAt)) {
+            errors.push({ user, message: 'Punch out time must be after punch in time' });
+            continue;
           }
         }
 
-        const isPunchDirection = status === "in" || status === "out";
-        const query = isPunchDirection
-          ? { user, date: dateRange, punchType: status }
-          : {
-              user,
-              date: dateRange,
-              punchType: { $in: ["absent", "present", "half-day", "half"] },
-            };
-
-        const existing = await Attendance.findOne(query);
         const resolvedPunchTime = punchTime ? new Date(punchTime) : undefined;
+        const key = keyOf(user, date, status);
+        const existing = state.get(key);
 
         if (existing) {
-          existing.punchType = status;
-          if (resolvedPunchTime) existing.punchTime = resolvedPunchTime;
-          if (branch) existing.branch = branch;
-          await existing.save();
-          results.push(existing);
+          const set = {
+            punchType: status,
+            ...(resolvedPunchTime && { punchTime: resolvedPunchTime }),
+            ...(branch && { branch }),
+          };
+          ops.push({ updateOne: { filter: { _id: existing._id }, update: { $set: set } } });
+          Object.assign(existing, set);
+          touched.set(key, existing);
         } else {
-          const attendance = new Attendance({
+          const doc = {
+            _id: new mongoose.Types.ObjectId(),
             user,
             branch,
             punchType: status,
@@ -1020,85 +892,74 @@ router.post("/bulk", authMiddleware, async (req, res) => {
             lat: 0,
             lng: 0,
             selfieUrl: null,
-          });
-          await attendance.save();
-          results.push(attendance);
+          };
+          ops.push({ insertOne: { document: doc } });
+          const stored = { ...doc, createdAt: new Date(), updatedAt: new Date() };
+          state.set(key, stored);
+          touched.set(key, stored);
         }
-      } catch (err) {
-        errors.push({ user, message: err.message });
       }
+
+      if (ops.length) await Attendance.bulkWrite(ops, { ordered: false });
+      memo.clear();
     }
 
+    const results = [...touched.values()];
     if (errors.length > 0) {
-      return res.status(207).json({
-        message: "Partial success",
-        results,
-        errors,
-      });
+      return res.status(207).json({ message: 'Partial success', results, errors });
     }
-
-    res.status(201).json({
-      message: "Attendance marked successfully",
-      results,
-    });
+    res.status(201).json({ message: 'Attendance marked successfully', results });
   } catch (err) {
-    console.error("Bulk attendance error:", err);
-    res
-      .status(500)
-      .json({ message: "Failed to mark attendance", error: err.message });
+    console.error('Bulk attendance error:', err);
+    res.status(500).json({ message: 'Failed to mark attendance', error: err.message });
   }
 });
 
-// ✅ GET: Fetch attendance by branch and date (for Labour Management)
-router.get("/by-date", authMiddleware, async (req, res) => {
-  console.log("🔥 HIT /api/attendance/by-date route");
-  console.log("📦 Query params:", req.query);
+// GET: attendance by branch and date (Labour Management)
+router.get('/by-date', authMiddleware, async (req, res) => {
   try {
     const { branch, date } = req.query;
 
-    if (!date) {
-      return res.status(400).json({ message: "Date is required" });
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: 'Date (YYYY-MM-DD) is required' });
     }
 
-    // Use a full-day UTC range so records stored at any time within the day are matched
-    const startOfDay = new Date(date + "T00:00:00.000Z");
-    const endOfDay = new Date(date + "T23:59:59.999Z");
-
+    // Full-day UTC range so records stored at any time of the day match.
     const query = {
-      date: { $gte: startOfDay, $lte: endOfDay },
+      date: {
+        $gte: new Date(`${date}T00:00:00.000Z`),
+        $lte: new Date(`${date}T23:59:59.999Z`),
+      },
     };
-
-    if (branch) {
-      query.branch = branch;
-    }
+    if (branch) query.branch = branch;
 
     const attendance = await Attendance.find(query)
-      .populate("user", "name username mobileNumber jobTitle role")
+      .populate('user', 'name username mobileNumber jobTitle role')
       .lean();
 
     res.json(attendance);
   } catch (err) {
-    console.error("Fetch attendance by date error:", err);
-    res
-      .status(500)
-      .json({ message: "Failed to fetch attendance", error: err.message });
+    console.error('Fetch attendance by date error:', err);
+    res.status(500).json({ message: 'Failed to fetch attendance', error: err.message });
   }
 });
 
-// ✅ GET note for user+date
-router.get("/notes/:userId/:date", authMiddleware, async (req, res) => {
+/* -------------------------------------------------------------------------- */
+/* Notes                                                                      */
+/* -------------------------------------------------------------------------- */
+
+router.get('/notes/:userId/:date', authMiddleware, async (req, res) => {
   try {
     const { userId, date } = req.params;
-    const note = await AttendanceNote.findOne({ userId, date });
-    res.json(note || { note: "" });
+    const note = await AttendanceNote.findOne({ userId, date }).lean();
+    res.json(note || { note: '' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Failed to fetch note" });
+    res.status(500).json({ message: 'Failed to fetch note' });
   }
 });
 
-// ✅ POST/UPDATE note
-router.post("/notes/:userId/:date", authMiddleware, async (req, res) => {
+router.post('/notes/:userId/:date', authMiddleware, async (req, res) => {
   try {
     const { userId, date } = req.params;
     const { note } = req.body;
@@ -1106,39 +967,37 @@ router.post("/notes/:userId/:date", authMiddleware, async (req, res) => {
     const updated = await AttendanceNote.findOneAndUpdate(
       { userId, date },
       { userId, date, note },
-      { upsert: true, new: true }
+      { upsert: true, new: true, lean: true }
     );
 
     res.json(updated);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: "Failed to save note" });
+    res.status(500).json({ message: 'Failed to save note' });
   }
 });
 
-// ✅ GET: Preview how many attendance records a date/date-range delete would affect
-// (Admin) — used to populate the confirmation screen before a bulk delete.
-router.get("/admin/delete-preview", authMiddleware, async (req, res) => {
+/* -------------------------------------------------------------------------- */
+/* Admin: bulk delete                                                         */
+/* -------------------------------------------------------------------------- */
+
+// GET: how many records a date-range delete would affect (confirmation screen)
+router.get('/admin/delete-preview', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ message: "Only admins can perform this action" });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
     }
 
     const { startDate, endDate } = req.query;
     const range = resolveDeleteRange(startDate, endDate);
-    if (range.error) {
-      return res.status(400).json({ message: range.error });
-    }
+    if (range.error) return res.status(400).json({ message: range.error });
     const { rangeStart, rangeEnd } = range;
 
     const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
-    const count = await Attendance.countDocuments(query);
-    const withSelfies = await Attendance.countDocuments({
-      ...query,
-      selfieUrl: { $nin: [null, ""] },
-    });
+    const [count, withSelfies] = await Promise.all([
+      Attendance.countDocuments(query),
+      Attendance.countDocuments({ ...query, selfieUrl: { $nin: [null, ''] } }),
+    ]);
 
     res.json({
       count,
@@ -1147,25 +1006,17 @@ router.get("/admin/delete-preview", authMiddleware, async (req, res) => {
       endDate: rangeEnd.toISOString(),
     });
   } catch (err) {
-    console.error("Delete preview error:", err);
-    res.status(500).json({
-      message: "Failed to preview attendance records",
-      error: err.message,
-    });
+    console.error('Delete preview error:', err);
+    res.status(500).json({ message: 'Failed to preview attendance records', error: err.message });
   }
 });
 
-// ✅ DELETE: Bulk-delete attendance records and/or their Cloudinary selfies for
-// a date/date-range (Admin only). The admin picks a target — database, Cloudinary,
-// or both — via deleteFromDatabase / deleteFromCloudinary. Requires the admin to
-// have typed the exact confirmation phrase, checked again here in case this is
-// called directly.
-router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
+// DELETE: bulk-delete attendance records and/or their Cloudinary selfies (admin only).
+// Requires the exact confirmation phrase, re-checked here for direct API calls.
+router.delete('/admin/bulk-delete', authMiddleware, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ message: "Only admins can perform this action" });
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admins can perform this action' });
     }
 
     const { startDate, endDate, confirmationPhrase, deleteFromDatabase, deleteFromCloudinary } = req.body;
@@ -1175,21 +1026,19 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
         message: `Confirmation phrase does not match. Type "${DELETE_CONFIRMATION_PHRASE}" to proceed.`,
       });
     }
-
     if (!deleteFromDatabase && !deleteFromCloudinary) {
       return res.status(400).json({ message: 'Select at least one target: database or Cloudinary' });
     }
 
     const range = resolveDeleteRange(startDate, endDate);
-    if (range.error) {
-      return res.status(400).json({ message: range.error });
-    }
+    if (range.error) return res.status(400).json({ message: range.error });
     const { rangeStart, rangeEnd } = range;
 
     const query = { date: { $gte: rangeStart, $lte: rangeEnd } };
-    const records = await Attendance.find(query).select('selfieUrl').lean();
 
-    if (!records.length) {
+    // Count first; only load documents when selfies actually need deleting.
+    const total = await Attendance.countDocuments(query);
+    if (!total) {
       return res.status(404).json({ message: 'No attendance records found in the selected period' });
     }
 
@@ -1197,8 +1046,11 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
     let cloudinaryFailed = 0;
 
     if (deleteFromCloudinary) {
-      // Map public_id back to its record so a Cloudinary-only delete can clear
-      // the now-dangling selfieUrl without touching the rest of the document.
+      const records = await Attendance.find({ ...query, selfieUrl: { $nin: [null, ''] } })
+        .select('selfieUrl')
+        .lean();
+
+      // public_id -> record, so a Cloudinary-only delete can null the dangling selfieUrl.
       const publicIdToRecordId = new Map();
       records.forEach((r) => {
         const publicId = extractCloudinaryPublicId(r.selfieUrl);
@@ -1207,8 +1059,7 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
       const publicIds = [...publicIdToRecordId.keys()];
       const deletedRecordIds = [];
 
-      // Batched at 100 (the admin delete_resources limit) — a Cloudinary hiccup
-      // should not block the rest of the request.
+      // Batches of 100 (Admin API limit), sequential to respect rate limits.
       for (let i = 0; i < publicIds.length; i += 100) {
         const batch = publicIds.slice(i, i + 100);
         try {
@@ -1227,13 +1078,9 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
         }
       }
 
-      // Only clear selfieUrl when the DB record itself is being kept — if it's
-      // about to be deleted wholesale below, there's nothing to clean up here.
+      // Records kept in the DB must not point at deleted images.
       if (!deleteFromDatabase && deletedRecordIds.length) {
-        await Attendance.updateMany(
-          { _id: { $in: deletedRecordIds } },
-          { $set: { selfieUrl: null } }
-        );
+        await Attendance.updateMany({ _id: { $in: deletedRecordIds } }, { $set: { selfieUrl: null } });
       }
     }
 
@@ -1241,19 +1088,18 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
     if (deleteFromDatabase) {
       const deleteResult = await Attendance.deleteMany(query);
       deletedCount = deleteResult.deletedCount;
+      memo.clear();
     }
 
     console.log(
-      `🗑️  Admin ${
-        req.user.email || req.user.id
-      } bulk-deleted attendance for ` +
+      `Admin ${req.user.email || req.user.id} bulk-deleted attendance for ` +
         `${rangeStart.toISOString()} to ${rangeEnd.toISOString()} ` +
         `(database=${!!deleteFromDatabase}, cloudinary=${!!deleteFromCloudinary}, ` +
         `deletedCount=${deletedCount}, cloudinaryDeleted=${cloudinaryDeleted})`
     );
 
     res.json({
-      message: "Attendance records processed successfully",
+      message: 'Attendance records processed successfully',
       deletedCount,
       cloudinaryDeleted,
       cloudinaryFailed,
@@ -1263,11 +1109,8 @@ router.delete("/admin/bulk-delete", authMiddleware, async (req, res) => {
       endDate: rangeEnd.toISOString(),
     });
   } catch (err) {
-    console.error("Bulk delete attendance error:", err);
-    res.status(500).json({
-      message: "Failed to delete attendance records",
-      error: err.message,
-    });
+    console.error('Bulk delete attendance error:', err);
+    res.status(500).json({ message: 'Failed to delete attendance records', error: err.message });
   }
 });
 
