@@ -34,6 +34,9 @@ import reportsRoutes from './routes/reports.routes.js';
 import labourRoutes from './routes/labour.routes.js';
 import connectDB from './config/db.js';
 
+import compression from 'compression';
+
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -71,7 +74,7 @@ function sanitizeMongo(obj) {
 const app = express();
 const PORT = process.env.PORT || 5002;
 const MONGO_URI = (process.env.MONGO_URI || '').trim();
-
+app.use(compression());
 if (!MONGO_URI) {
   console.error('Missing MONGO_URI. Set it in your environment or in a .env file in the project root.');
   process.exit(1);

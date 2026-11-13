@@ -45,8 +45,9 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-attendanceSchema.index({ user: 1, date: 1 });
-attendanceSchema.index({ clientId: 1 }, { unique: true, sparse: true });
-attendanceSchema.index({ user: 1, createdAt: -1 });
-
+attendanceSchema.index({ user: 1, date: 1, punchType: 1 }); // replaces { user, date }: summary, bulk, supervisor-code-punch
+attendanceSchema.index({ user: 1, createdAt: -1 });           // keep: /my, /today, /live, GET /, /user/:id
+attendanceSchema.index({ branch: 1, date: 1 });              // new: /by-date
+attendanceSchema.index({ date: 1 });                         // new: admin delete preview/delete
+attendanceSchema.index({ clientId: 1 }, { unique: true, sparse: true }); // keep
 export default mongoose.model("Attendance", attendanceSchema);

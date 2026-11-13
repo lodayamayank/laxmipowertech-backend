@@ -69,4 +69,6 @@ userSchema.pre('save', async function () {
   this.password = await bcrypt.hash(this.password, salt);
 });
 
+userSchema.index({ role: 1, project: 1 });
+
 export default mongoose.model('User', userSchema);
