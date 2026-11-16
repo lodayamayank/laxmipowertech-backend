@@ -66,5 +66,6 @@ const projectSchema = new mongoose.Schema({
 }, { timestamps: true });
 // models/Project.js
 projectSchema.index({ createdAt: -1 });
+projectSchema.index({ branches: 1 });
 
 export default mongoose.model('Project', projectSchema);

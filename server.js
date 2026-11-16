@@ -33,6 +33,7 @@ import upcomingDeliveryRoutes from './routes/upcomingDelivery.routes.js';
 import reportsRoutes from './routes/reports.routes.js';
 import labourRoutes from './routes/labour.routes.js';
 import connectDB from './config/db.js';
+import projectDocumentRoutes from "./routes/projectDocuments.routes.js";
 
 import compression from 'compression';
 
@@ -176,6 +177,7 @@ app.use('/api/material/purchase-orders', purchaseOrderRoutes);
 app.use('/api/material/upcoming-deliveries', upcomingDeliveryRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/labour', labourRoutes);
+app.use("/api", projectDocumentRoutes);
 
 async function start() {
   try {
