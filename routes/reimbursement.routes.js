@@ -14,6 +14,11 @@ import {
 
 const router = express.Router();
 
+let pendingCache = { count: 0, at: 0 };
+const invalidatePendingCache = () => {
+  pendingCache.at = 0;
+};
+
 // Setup multer for receipt uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -94,6 +99,7 @@ router.post("/", auth, upload.array("receipts", 10), async (req, res) => {
 
     try {
       await reimbursement.save();
+      invalidatePendingCache();
     } catch (saveErr) {
       // Two replays raced; the loser hit the unique clientId index. The claim
       // exists, so report success with the winner rather than a 500.
@@ -142,6 +148,23 @@ router.get("/my", auth, async (req, res) => {
     });
   }
 });
+// GET /api/reimbursements/pending-count
+router.get("/pending-count", auth, async (req, res) => {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "supervisor") {
+      return res.status(403).json({ message: "Access denied" });
+    }
+    if (Date.now() - pendingCache.at > 15_000) {
+      pendingCache = {
+        count: await Reimbursement.countDocuments({ status: "pending" }),
+        at: Date.now(),
+      };
+    }
+    res.json({ count: pendingCache.count });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch count", error: err.message });
+  }
+});
 
 // ✅ Admin: Get all reimbursement requests (with filters) - MUST BE BEFORE /:id
 router.get("/", auth, async (req, res) => {
@@ -149,44 +172,39 @@ router.get("/", auth, async (req, res) => {
     if (req.user.role !== "admin" && req.user.role !== "supervisor") {
       return res.status(403).json({ message: "Access denied" });
     }
-    
-    const { status, role, from, to, page = 1, limit = 20 } = req.query;
+
+    const { status, role, from, to } = req.query;
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const query = {};
-    
+
     if (status) query.status = status;
     if (from || to) {
       query.submittedAt = {};
       if (from) query.submittedAt.$gte = new Date(from);
       if (to) query.submittedAt.$lte = new Date(to);
     }
-    
-    // 🔧 FIX: Filter by role before populating
+
     if (role) {
-      const usersWithRole = await User.find({ role }).select("_id");
-      const userIds = usersWithRole.map(u => u._id);
+      const userIds = await User.find({ role }).distinct("_id");
       query.user = { $in: userIds };
     }
-    
-    const total = await Reimbursement.countDocuments(query);
-    const reimbursements = await Reimbursement.find(query)
-      .populate("user", "name username email mobileNumber role assignedBranches")
-      .populate("approver", "name")
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
-    
-    res.json({ 
-      rows: reimbursements, 
-      total, 
-      page: Number(page), 
-      limit: Number(limit) 
-    });
+
+    const [rows, total] = await Promise.all([
+      Reimbursement.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .populate("user", "name username email mobileNumber role assignedBranches")
+        .populate("approver", "name")
+        .lean(),
+      Reimbursement.countDocuments(query),
+    ]);
+
+    res.json({ rows, total, page, limit });
   } catch (err) {
     console.error("Failed to fetch reimbursements", err);
-    res.status(500).json({ 
-      message: "Failed to fetch reimbursements", 
-      error: err.message 
-    });
+    res.status(500).json({ message: "Failed to fetch reimbursements", error: err.message });
   }
 });
 
@@ -249,6 +267,7 @@ router.patch("/:id/status", auth, async (req, res) => {
     }
     
     await reimbursement.save();
+    invalidatePendingCache();
     await reimbursement.populate("user", "name username email");
     
     res.json({ 
@@ -295,6 +314,7 @@ router.delete("/:id", auth, async (req, res) => {
     });
     
     await reimbursement.deleteOne();
+    invalidatePendingCache();
     
     res.json({ message: "Reimbursement deleted successfully" });
   } catch (err) {

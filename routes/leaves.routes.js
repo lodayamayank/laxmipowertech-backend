@@ -4,6 +4,7 @@ import Leave from "../models/Leave.js";
 import auth from "../middleware/authMiddleware.js";
 import Attendance from "../models/Attendance.js";
 import { upload, uploadToCloudinary } from "../middleware/cloudinaryMaterialMiddleware.js";
+import User from "../models/User.js";
 import fs from "fs";
 import {
   resolveCapturedAt,
@@ -13,6 +14,10 @@ import {
 } from "../utils/offlineSync.js";
 
 const router = express.Router();
+let pendingCache = { count: 0, at: 0 };
+const invalidatePendingCache = () => {
+  pendingCache.at = 0;
+};
 
 const hasValidImageSignature = (filePath, mimetype) => {
   const header = fs.readFileSync(filePath).subarray(0, 12);
@@ -76,6 +81,7 @@ router.post("/", auth, upload.single("proof"), async (req, res) => {
 
     try {
       await leave.save();
+      invalidatePendingCache();
     } catch (saveErr) {
       if (isDuplicateClientIdError(saveErr)) {
         const winner = await findExistingByClientId(Leave, clientId);
@@ -87,6 +93,28 @@ router.post("/", auth, upload.single("proof"), async (req, res) => {
     res.status(201).json(leave);
   } catch (err) {
     res.status(400).json({ message: "Failed to request leave", error: err.message });
+  }
+});
+
+
+
+// GET /api/leaves/pending-count
+router.get("/pending-count", auth, async (req, res) => {
+  try {
+    if (req.user.role !== "admin" && req.user.role !== "supervisor") {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    if (Date.now() - pendingCache.at > 15_000) {
+      pendingCache = {
+        count: await Leave.countDocuments({ status: "pending" }),
+        at: Date.now(),
+      };
+    }
+    res.json({ count: pendingCache.count });
+  } catch (err) {
+    res
+      .status(500)
+      .json({ message: "Failed to fetch count", error: err.message });
   }
 });
 
@@ -107,7 +135,16 @@ router.get("/", auth, async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const { status, type, role, branchId, from, to, page = 1, limit = 20 } = req.query;
+    const {
+      status,
+      type,
+      role,
+      branchId,
+      from,
+      to,
+      page = 1,
+      limit = 20,
+    } = req.query;
     const query = {};
 
     if (status) query.status = status;
@@ -118,26 +155,29 @@ router.get("/", auth, async (req, res) => {
       if (to) query.$and.push({ startDate: { $lte: new Date(to) } });
     }
 
-    let leavesQuery = Leave.find(query)
-      .populate({
-        path: "user",
-        select: "username role assignedBranches",
-        populate: { path: "assignedBranches", select: "name" }  // 👈 added
-      })
-      .sort({ createdAt: -1 });
-
-    if (role) {
-      leavesQuery = leavesQuery.where("user.role").equals(role);
+    // 1. Resolve role / branch against the User collection first
+    if (role || branchId) {
+      const userFilter = {};
+      if (role) userFilter.role = role;
+      if (branchId) userFilter.assignedBranches = branchId;
+      const userIds = await User.find(userFilter).distinct("_id");
+      query.user = { $in: userIds };
     }
 
-    if (branchId) {
-      leavesQuery = leavesQuery.where("user.assignedBranches").in([branchId]);
-    }
-
-    const total = await Leave.countDocuments(query);
-    const leaves = await leavesQuery
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
+    // 2. Run the list and the count at the same time
+    const [leaves, total] = await Promise.all([
+      Leave.find(query)
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(Number(limit))
+        .populate({
+          path: "user",
+          select: "username role assignedBranches",
+          populate: { path: "assignedBranches", select: "name" },
+        })
+        .lean(),
+      Leave.countDocuments(query),
+    ]);
 
     res.json({ rows: leaves, total, page: Number(page), limit: Number(limit) });
   } catch (err) {
@@ -165,27 +205,38 @@ router.patch("/:id/status", auth, async (req, res) => {
     leave.approver = req.user.id;
     leave.approvedAt = new Date();
     await leave.save();
+    invalidatePendingCache();
 
     // 🔹 Attendance sync
     if (status === "approved") {
-      const start = new Date(leave.startDate);
+      const ops = [];
       const end = new Date(leave.endDate);
 
-      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-        await Attendance.findOneAndUpdate(
-          { user: leave.user, date: d },
-          {
-            user: leave.user,
-            date: d,
-            punchType: "leave",   // 👈 always "leave"
-            leaveId: leave._id,   // 👈 use leaveId to know type (paid/unpaid/sick/casual)
+      for (
+        let d = new Date(leave.startDate);
+        d <= end;
+        d.setDate(d.getDate() + 1)
+      ) {
+        const date = new Date(d); // copy, because d keeps changing
+        ops.push({
+          updateOne: {
+            filter: { user: leave.user, date },
+            update: {
+              $set: {
+                user: leave.user,
+                date,
+                punchType: "leave",
+                leaveId: leave._id,
+              },
+            },
+            upsert: true,
           },
-          { upsert: true, new: true }
-        );
+        });
       }
-    }
-    else {
-      // If rejected or set back to pending → remove linked attendance
+
+      if (ops.length) await Attendance.bulkWrite(ops);
+    } else {
+      // Rejected or set back to pending → remove linked attendance
       await Attendance.deleteMany({ leaveId: leave._id });
     }
 

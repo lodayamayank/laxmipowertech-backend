@@ -28,6 +28,10 @@ const LeaveSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 LeaveSchema.index({ user: 1, status: 1, startDate: 1, endDate: 1 });
+LeaveSchema.index({ status: 1, createdAt: -1 });           // badge count + admin list filtered by status
+LeaveSchema.index({ user: 1, createdAt: -1 });             // GET /my (sorted by newest)
+LeaveSchema.index({ startDate: 1, endDate: 1 });           // from/to date-range filters
 LeaveSchema.index({ clientId: 1 }, { unique: true, sparse: true });
+
 
 export default mongoose.model("Leave", LeaveSchema);

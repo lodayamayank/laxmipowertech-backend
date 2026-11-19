@@ -39,5 +39,9 @@ const ReimbursementSchema = new mongoose.Schema({
 
 ReimbursementSchema.index({ user: 1, status: 1, submittedAt: 1 });
 ReimbursementSchema.index({ clientId: 1 }, { unique: true, sparse: true });
+ReimbursementSchema.index({ status: 1, createdAt: -1 });  // badge count + admin list by status
+ReimbursementSchema.index({ user: 1, createdAt: -1 });    // GET /my
+ReimbursementSchema.index({ submittedAt: 1 });            // from/to filters
+
 
 export default mongoose.model("Reimbursement", ReimbursementSchema);

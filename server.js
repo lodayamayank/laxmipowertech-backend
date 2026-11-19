@@ -33,6 +33,10 @@ import upcomingDeliveryRoutes from './routes/upcomingDelivery.routes.js';
 import reportsRoutes from './routes/reports.routes.js';
 import labourRoutes from './routes/labour.routes.js';
 import connectDB from './config/db.js';
+import projectDocumentRoutes from "./routes/projectDocuments.routes.js";
+
+import compression from 'compression';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -71,7 +75,7 @@ function sanitizeMongo(obj) {
 const app = express();
 const PORT = process.env.PORT || 5002;
 const MONGO_URI = (process.env.MONGO_URI || '').trim();
-
+app.use(compression());
 if (!MONGO_URI) {
   console.error('Missing MONGO_URI. Set it in your environment or in a .env file in the project root.');
   process.exit(1);
@@ -173,6 +177,7 @@ app.use('/api/material/purchase-orders', purchaseOrderRoutes);
 app.use('/api/material/upcoming-deliveries', upcomingDeliveryRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/labour', labourRoutes);
+app.use("/api", projectDocumentRoutes);
 
 async function start() {
   try {
