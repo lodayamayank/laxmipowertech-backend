@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-
+//vendors
 const vendorSchema = new mongoose.Schema({
   companyName: String,
   contact: String,
