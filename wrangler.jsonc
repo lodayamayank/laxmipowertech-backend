@@ -1,0 +1,8 @@
+{
+  "name": "laxmipowertech-backend",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "placement": { "mode": "smart" },
+  "observability": { "enabled": true }
+}
