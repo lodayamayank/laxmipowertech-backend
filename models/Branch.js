@@ -7,4 +7,5 @@ const branchSchema = new mongoose.Schema({
   radius: { type: Number, default: 100 },address: { type: String },
 }, { timestamps: true },);
 
+branchSchema.index({ createdAt: -1 });
 export default mongoose.model('Branch', branchSchema);
