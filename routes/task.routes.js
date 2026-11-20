@@ -43,6 +43,10 @@ const ensureSupervisorAssignedToProject = async (supervisorId, projectId, res) =
 
   return true;
 };
+const tasksCache = new Map(); // "userId:url" -> { json, exp }
+const TASKS_TTL = 10_000;
+const invalidateTasksCache = () => tasksCache.clear();
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // Admin create task (Admin can create for any supervisor)
 router.post('/admin', auth, upload.single('photo'), async (req, res) => {
@@ -102,6 +106,7 @@ router.post('/admin', auth, upload.single('photo'), async (req, res) => {
     });
 
     await task.save();
+    invalidateTasksCache();
 
     // Populate before sending response
     await task.populate('supervisor', 'name email role');
@@ -193,6 +198,7 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
 
     try {
       await task.save();
+      invalidateTasksCache();
     } catch (saveErr) {
       // Two replays raced; the loser hit the unique clientId index. The task
       // exists, so report success with the winner.
@@ -233,40 +239,48 @@ router.post('/', auth, upload.single('photo'), async (req, res) => {
 });
 
 // Get all tasks with filtering (Admin & Supervisor)
-router.get('/', auth, filterByUserBranches, async (req, res) => {
+router.get("/", auth, filterByUserBranches, async (req, res) => {
   try {
-    const { 
-      project, 
-      branch,
-      building, 
-      wing, 
-      floor, 
-      flat, 
-      supervisor, 
-      startDate, 
-      endDate,
-      page = 1, 
-      limit = 50 
-    } = req.query;
-    
-    const filter = {};
+    const key = `${req.user.id}:${req.originalUrl}`;
+    const hit = tasksCache.get(key);
+    if (hit && hit.exp > Date.now()) return res.type("json").send(hit.json);
 
-    // Apply role-based filtering
-    if (req.user.role === 'supervisor' || req.user.role === 'subcontractor') {
-      // Supervisors only see their own tasks
+    const {
+      project,
+      branch,
+      building,
+      wing,
+      floor,
+      flat,
+      supervisor,
+      startDate,
+      endDate,
+    } = req.query;
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit, 10) || 50, 1),
+      100,
+    );
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+
+    const filter = {};
+    if (req.user.role === "supervisor" || req.user.role === "subcontractor") {
       filter.supervisor = req.user.id;
     }
-
-    // Apply filters
     if (project) filter.project = project;
     if (branch) filter.branch = branch;
-    if (building) filter['building.name'] = { $regex: building, $options: 'i' };
-    if (wing) filter['wing.name'] = { $regex: wing, $options: 'i' };
-    if (floor) filter['floor.name'] = { $regex: floor, $options: 'i' };
-    if (flat) filter['flat.name'] = { $regex: flat, $options: 'i' };
+    if (building)
+      filter["building.name"] = {
+        $regex: escapeRegex(building),
+        $options: "i",
+      };
+    if (wing)
+      filter["wing.name"] = { $regex: escapeRegex(wing), $options: "i" };
+    if (floor)
+      filter["floor.name"] = { $regex: escapeRegex(floor), $options: "i" };
+    if (flat)
+      filter["flat.name"] = { $regex: escapeRegex(flat), $options: "i" };
     if (supervisor) filter.supervisor = supervisor;
 
-    // Date range filter
     if (startDate || endDate) {
       filter.createdAt = {};
       if (startDate) filter.createdAt.$gte = new Date(startDate);
@@ -277,37 +291,42 @@ router.get('/', auth, filterByUserBranches, async (req, res) => {
       }
     }
 
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const total = await Task.countDocuments(filter);
+    const [total, tasks] = await Promise.all([
+      Task.countDocuments(filter),
+      Task.find(filter)
+        .populate("project", "name address")
+        .populate("branch", "name address")
+        .populate("supervisor", "name email role")
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit),
+    ]);
 
-    const tasks = await Task.find(filter)
-      .populate('project', 'name address')
-      .populate('branch', 'name address')
-      .populate('supervisor', 'name email role')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-
-    res.json({
+    const json = JSON.stringify({
       success: true,
       data: tasks,
       pagination: {
-        currentPage: parseInt(page),
+        currentPage: page,
         totalPages: Math.ceil(total / limit),
         totalItems: total,
-        itemsPerPage: parseInt(limit)
-      }
+        itemsPerPage: limit,
+      },
     });
+
+    if (tasksCache.size > 200) tasksCache.clear();
+    tasksCache.set(key, { json, exp: Date.now() + TASKS_TTL });
+    res.type("json").send(json);
   } catch (err) {
-    console.error('Error fetching tasks:', err);
-    res.status(500).json({ 
-      success: false,
-      message: 'Failed to fetch tasks', 
-      error: err.message 
-    });
+    console.error("Error fetching tasks:", err);
+    res
+      .status(500)
+      .json({
+        success: false,
+        message: "Failed to fetch tasks",
+        error: err.message,
+      });
   }
 });
-
 // Get task by ID
 router.get('/:id', auth, async (req, res) => {
   try {
@@ -382,7 +401,7 @@ router.put('/:id/status', auth, async (req, res) => {
         message: 'Task not found' 
       });
     }
-
+    invalidateTasksCache();
     res.json({
       success: true,
       message: 'Task status updated successfully',
@@ -433,7 +452,7 @@ router.patch('/:id/status', auth, async (req, res) => {
         message: 'Task not found' 
       });
     }
-
+    invalidateTasksCache();
     res.json({
       success: true,
       message: 'Task status updated successfully',
@@ -519,6 +538,7 @@ router.put('/:id', auth, upload.single('photo'), async (req, res) => {
     }
 
     await task.save();
+    invalidateTasksCache();
 
     // Populate before sending response
     await task.populate('supervisor', 'name email role');
@@ -568,6 +588,7 @@ router.delete('/:id', auth, async (req, res) => {
     }
 
     await task.deleteOne();
+    invalidateTasksCache();
 
     res.json({
       success: true,
