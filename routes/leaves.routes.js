@@ -27,6 +27,9 @@ const hasValidImageSignature = (filePath, mimetype) => {
   if (mimetype === "image/webp") return header.subarray(0, 4).toString("ascii") === "RIFF" && header.subarray(8, 12).toString("ascii") === "WEBP";
   return false;
 };
+const listCache = new Map(); 
+const LIST_TTL = 10_000;
+export const invalidateLeavesCache = () => listCache.clear();
 
 // ✅ Request leave
 router.post("/", auth, upload.single("proof"), async (req, res) => {
@@ -82,6 +85,7 @@ router.post("/", auth, upload.single("proof"), async (req, res) => {
     try {
       await leave.save();
       invalidatePendingCache();
+      invalidateLeavesCache(); 
     } catch (saveErr) {
       if (isDuplicateClientIdError(saveErr)) {
         const winner = await findExistingByClientId(Leave, clientId);
@@ -121,30 +125,40 @@ router.get("/pending-count", auth, async (req, res) => {
 // ✅ Get my leave requests
 router.get("/my", auth, async (req, res) => {
   try {
-    const leaves = await Leave.find({ user: req.user.id }).sort({ createdAt: -1 });
+    const l = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+    const p = Math.max(parseInt(req.query.page, 10) || 1, 1);
+
+    const leaves = await Leave.find({ user: req.user.id })
+      .sort({ createdAt: -1 })
+      .skip((p - 1) * l)
+      .limit(l)
+      .lean();
+
     res.json(leaves);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch leaves", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch leaves", error: err.message });
   }
 });
 
-// ✅ Admin: get all leaves (with filters & pagination)
 router.get("/", auth, async (req, res) => {
   try {
     if (req.user.role !== "admin" && req.user.role !== "supervisor") {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const {
-      status,
-      type,
-      role,
-      branchId,
-      from,
-      to,
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const key = req.originalUrl;
+    const hit = listCache.get(key);
+    if (hit && hit.exp > Date.now()) return res.json(hit.body);
+
+    const { status, type, role, branchId, from, to } = req.query;
+    const search = String(req.query.search || "")
+      .trim()
+      .slice(0, 50);
+    const l = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const p = Math.max(parseInt(req.query.page, 10) || 1, 1);
+
     const query = {};
 
     if (status) query.status = status;
@@ -155,21 +169,24 @@ router.get("/", auth, async (req, res) => {
       if (to) query.$and.push({ startDate: { $lte: new Date(to) } });
     }
 
-    // 1. Resolve role / branch against the User collection first
-    if (role || branchId) {
+    // Resolve role / branch / search against the User collection first
+    if (role || branchId || search) {
       const userFilter = {};
       if (role) userFilter.role = role;
       if (branchId) userFilter.assignedBranches = branchId;
+      if (search) {
+        const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        userFilter.username = { $regex: escaped, $options: "i" };
+      }
       const userIds = await User.find(userFilter).distinct("_id");
       query.user = { $in: userIds };
     }
 
-    // 2. Run the list and the count at the same time
     const [leaves, total] = await Promise.all([
       Leave.find(query)
         .sort({ createdAt: -1 })
-        .skip((page - 1) * limit)
-        .limit(Number(limit))
+        .skip((p - 1) * l)
+        .limit(l)
         .populate({
           path: "user",
           select: "username role assignedBranches",
@@ -179,9 +196,14 @@ router.get("/", auth, async (req, res) => {
       Leave.countDocuments(query),
     ]);
 
-    res.json({ rows: leaves, total, page: Number(page), limit: Number(limit) });
+    const body = { rows: leaves, total, page: p, limit: l };
+    if (listCache.size > 200) listCache.clear();
+    listCache.set(key, { body, exp: Date.now() + LIST_TTL });
+    res.json(body);
   } catch (err) {
-    res.status(500).json({ message: "Failed to fetch leaves", error: err.message });
+    res
+      .status(500)
+      .json({ message: "Failed to fetch leaves", error: err.message });
   }
 });
 
@@ -206,6 +228,7 @@ router.patch("/:id/status", auth, async (req, res) => {
     leave.approvedAt = new Date();
     await leave.save();
     invalidatePendingCache();
+    invalidateLeavesCache(); 
 
     // 🔹 Attendance sync
     if (status === "approved") {
