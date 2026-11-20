@@ -7,6 +7,16 @@ import authMiddleware from '../middleware/authMiddleware.js';
 const router = express.Router();
 
 const sanitizeUserQuery = (query) => query.select('-password');
+const requireRole =
+  (...roles) =>
+  (req, res, next) =>
+    roles.includes(req.user?.role)
+      ? next()
+      : res.status(403).json({ message: "Forbidden" });
+      
+const usersCache = new Map(); // url -> { json, exp }
+const USERS_TTL = 10_000;
+const invalidateUsersCache = () => usersCache.clear();      
 
 // Get allowed roles
 router.get('/roles', (req, res) => {
@@ -44,7 +54,7 @@ router.get('/roles', (req, res) => {
 //   }
 // });
 // In user.routes.js - Update the register route
-router.post('/register', authMiddleware, async (req, res) => {
+router.post('/register', authMiddleware,requireRole('admin'), async (req, res) => {
   try {
     const { password, ...rest } = req.body;
 
@@ -55,6 +65,7 @@ router.post('/register', authMiddleware, async (req, res) => {
     });
 
     await newUser.save();
+    invalidateUsersCache();
 
     const populatedUser = await sanitizeUserQuery(User.findById(newUser._id))
       .populate('project', 'name')
@@ -94,30 +105,37 @@ router.get('/me', authMiddleware, async (req, res) => {
 });
 
 // ✅ Get all users (with optional filtering by role and branch)
-router.get('/', authMiddleware, async (req, res) => {
-  try {
-    const { role, branch } = req.query;
-    const filter = {};
-    
-    // Filter by role if provided
-    if (role) {
-      filter.role = role;
-    }
-    
-    // Filter by branch if provided
-    if (branch) {
-      filter.assignedBranches = branch;
-    }
-    
-    const users = await sanitizeUserQuery(User.find(filter))
-      .populate('project', 'name')
-      .populate('assignedBranches', 'name radius lat lng address');
-    res.json(users);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to fetch users', error: err.message });
-  }
-});
+router.get(
+  "/",
+  authMiddleware,
+  requireRole("admin", "supervisor"),
+  async (req, res) => {
+    try {
+      const key = req.originalUrl;
+      const hit = usersCache.get(key);
+      if (hit && hit.exp > Date.now()) return res.type("json").send(hit.json);
 
+      const { role, branch } = req.query;
+      const filter = {};
+      if (role) filter.role = role;
+      if (branch) filter.assignedBranches = branch;
+
+      const users = await sanitizeUserQuery(User.find(filter))
+        .populate("project", "name")
+        .populate("assignedBranches", "name radius lat lng address")
+        .lean();
+
+      const json = JSON.stringify(users);
+      if (usersCache.size > 200) usersCache.clear();
+      usersCache.set(key, { json, exp: Date.now() + USERS_TTL });
+      res.type("json").send(json);
+    } catch (err) {
+      res
+        .status(500)
+        .json({ message: "Failed to fetch users", error: err.message });
+    }
+  },
+);
 // ✅ Update current user profile
 router.put('/me', authMiddleware, async (req, res) => {
   try {
@@ -125,13 +143,17 @@ router.put('/me', authMiddleware, async (req, res) => {
     const updateData = { ...req.body };
 
     const allowedFields = [
-      'name', 'email', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
-      'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
-      'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
-      'department', 'jobTitle',
-      'ctcAmount', 'salaryType', 'salaryEffectiveDate',
-      'perDayTravelAllowance', 'railwayPassAmount', 
-      'standardDailyHours', 'overtimeRateMultiplier' 
+      "name",
+      "email",
+      "mobileNumber",
+      "personalEmail",
+      "dateOfBirth",
+      "maritalStatus",
+      "aadhaarNumber",
+      "panNumber",
+      "drivingLicense",
+      "emergencyContact",
+      "address",
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -141,7 +163,7 @@ router.put('/me', authMiddleware, async (req, res) => {
     const updated = await sanitizeUserQuery(User.findByIdAndUpdate(userId, updateData, { new: true }))
       .populate('project', 'name')
       .populate('assignedBranches', 'name radius lat lng address');
-
+    invalidateUsersCache();
     res.json(updated);
   } catch (err) {
     console.error('❌ Update failed:', err);
@@ -186,6 +208,12 @@ router.patch('/me/password', authMiddleware, async (req, res) => {
 
 // ✅ Get single user by ID
 router.get('/:id', authMiddleware, async (req, res) => {
+  if (
+    String(req.user.id) !== req.params.id &&
+    !["admin", "supervisor"].includes(req.user.role)
+  ) {
+    return res.status(403).json({ message: "Forbidden" });
+  }
   try {
     const user = await sanitizeUserQuery(User.findById(req.params.id))
       .populate('project', 'name')
@@ -203,15 +231,17 @@ router.get('/:id', authMiddleware, async (req, res) => {
 });
 
 // ✅ Update user by ID (with optional password hashing + safe default)
-router.put('/:id', authMiddleware, async (req, res) => {
+router.put("/:id", authMiddleware, requireRole("admin"), async (req, res) => {
   try {
-    console.log('📥 [Backend] Received req.body:', req.body);
+    console.log("📥 [Backend] Received req.body:", req.body);
 
     const updateData = { ...req.body };
 
     if (updateData.password && updateData.password.trim()) {
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ message: 'Only admins can set another user password' });
+      if (req.user.role !== "admin") {
+        return res
+          .status(403)
+          .json({ message: "Only admins can set another user password" });
       }
       updateData.password = await bcrypt.hash(updateData.password.trim(), 10);
     } else {
@@ -219,18 +249,39 @@ router.put('/:id', authMiddleware, async (req, res) => {
     }
 
     // Remove invalid project field
-    if (!updateData.project || updateData.project === '') {
+    if (!updateData.project || updateData.project === "") {
       delete updateData.project;
     }
 
     const allowedFields = [
-      'name', 'mobileNumber', 'personalEmail', 'dateOfBirth', 'maritalStatus',
-      'aadhaarNumber', 'panNumber', 'drivingLicense', 'emergencyContact',
-      'address', 'employeeType', 'dateOfJoining', 'dateOfLeaving', 'employeeId',
-      'department', 'jobTitle', 'project', 'assignedBranches', 'role', 'password', 'username',
-      'ctcAmount', 'salaryType', 'salaryEffectiveDate',
-      'perDayTravelAllowance', 'railwayPassAmount', 
-      'standardDailyHours', 'overtimeRateMultiplier' 
+      "name",
+      "mobileNumber",
+      "personalEmail",
+      "dateOfBirth",
+      "maritalStatus",
+      "aadhaarNumber",
+      "panNumber",
+      "drivingLicense",
+      "emergencyContact",
+      "address",
+      "employeeType",
+      "dateOfJoining",
+      "dateOfLeaving",
+      "employeeId",
+      "department",
+      "jobTitle",
+      "project",
+      "assignedBranches",
+      "role",
+      "password",
+      "username",
+      "ctcAmount",
+      "salaryType",
+      "salaryEffectiveDate",
+      "perDayTravelAllowance",
+      "railwayPassAmount",
+      "standardDailyHours",
+      "overtimeRateMultiplier",
     ];
 
     Object.keys(updateData).forEach((key) => {
@@ -257,51 +308,56 @@ router.put('/:id', authMiddleware, async (req, res) => {
 
     // Remove empty string values that shouldn't be sent
     Object.keys(updateData).forEach((key) => {
-      if (updateData[key] === '') {
+      if (updateData[key] === "") {
         delete updateData[key];
       }
     });
     // console.log(' [Backend] Final updateData after removing empty strings:', updateData);
 
-    const updatedUser = await sanitizeUserQuery(User.findByIdAndUpdate(
-      req.params.id,
-      { $set: updateData },  // Use $set operator explicitly
-      {
-        new: true,
-        runValidators: true,
-        strict: false  // Allow fields not in schema (shouldn't be needed but helps debug)
-      }
-    ))
-      .populate('project', 'name')
-      .populate('assignedBranches', 'name radius lat lng address');
+    const updatedUser = await sanitizeUserQuery(
+      User.findByIdAndUpdate(
+        req.params.id,
+        { $set: updateData }, // Use $set operator explicitly
+        {
+          new: true,
+          runValidators: true,
+          strict: false, // Allow fields not in schema (shouldn't be needed but helps debug)
+        },
+      ),
+    )
+      .populate("project", "name")
+      .populate("assignedBranches", "name radius lat lng address");
 
-  //  console.log('✅ [Backend] Updated user:', updatedUser);
-  //   console.log('✅ [Backend] Updated specific fields:', {
-  //     personalEmail: updatedUser.personalEmail,
-  //     dateOfBirth: updatedUser.dateOfBirth,
-  //     maritalStatus: updatedUser.maritalStatus,
-  //     aadhaarNumber: updatedUser.aadhaarNumber,
-  //     panNumber: updatedUser.panNumber,
-  //     drivingLicense: updatedUser.drivingLicense,
-  //     emergencyContact: updatedUser.emergencyContact,
-  //     employeeType: updatedUser.employeeType,
-  //     employeeId: updatedUser.employeeId,
-  //     department: updatedUser.department,
-  //     dateOfLeaving: updatedUser.dateOfLeaving
-  //   });
-
+    //  console.log('✅ [Backend] Updated user:', updatedUser);
+    //   console.log('✅ [Backend] Updated specific fields:', {
+    //     personalEmail: updatedUser.personalEmail,
+    //     dateOfBirth: updatedUser.dateOfBirth,
+    //     maritalStatus: updatedUser.maritalStatus,
+    //     aadhaarNumber: updatedUser.aadhaarNumber,
+    //     panNumber: updatedUser.panNumber,
+    //     drivingLicense: updatedUser.drivingLicense,
+    //     emergencyContact: updatedUser.emergencyContact,
+    //     employeeType: updatedUser.employeeType,
+    //     employeeId: updatedUser.employeeId,
+    //     department: updatedUser.department,
+    //     dateOfLeaving: updatedUser.dateOfLeaving
+    //   });
+    invalidateUsersCache();
     res.json(updatedUser);
   } catch (err) {
-    console.error('❌ [Backend] Update failed:', err);
-    res.status(500).json({ message: 'Failed to update user', error: err.message });
+    console.error("❌ [Backend] Update failed:", err);
+    res
+      .status(500)
+      .json({ message: "Failed to update user", error: err.message });
   }
 });
 
 
 // ✅ Delete a user
-router.delete('/:id', authMiddleware, async (req, res) => {
+router.delete('/:id', authMiddleware,requireRole('admin'), async (req, res) => {
   try {
     await User.findByIdAndDelete(req.params.id);
+    invalidateUsersCache();
     res.json({ message: 'User deleted successfully' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to delete user', error: err.message });
@@ -338,7 +394,7 @@ router.post('/reset-password/:username', authMiddleware, async (req, res) => {
     res.status(500).json({ message: "Failed to reset password", error: err.message });
   }
 });
-router.put('/:id/personal', authMiddleware, async (req, res) => {
+router.put('/:id/personal', authMiddleware, requireRole('admin'), async (req, res) => {
   try {
     const updateData = { ...req.body };
     delete updateData.password; // ⚠️ Never update password through this route
@@ -349,13 +405,14 @@ router.put('/:id/personal', authMiddleware, async (req, res) => {
       { $set: updateData },
       { new: true }
     ));
+    invalidateUsersCache();
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to update personal info', error: err.message });
   }
 });
 
-router.put('/:id/employee', authMiddleware, async (req, res) => {
+router.put('/:id/employee', authMiddleware, requireRole('admin'), async (req, res) => {
   try {
     const updateData = { ...req.body };
     delete updateData.password; // ⚠️ Never update password through this route
@@ -366,6 +423,7 @@ router.put('/:id/employee', authMiddleware, async (req, res) => {
       { $set: updateData },
       { new: true }
     ));
+    invalidateUsersCache();
     res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to update employee info', error: err.message });
@@ -436,7 +494,7 @@ router.patch('/:id/salary-config', authMiddleware, async (req, res) => {
     if (!updatedUser) {
       return res.status(404).json({ message: 'User not found' });
     }
-
+    invalidateUsersCache();
     res.json({
       message: 'Salary configuration updated successfully',
       user: updatedUser
