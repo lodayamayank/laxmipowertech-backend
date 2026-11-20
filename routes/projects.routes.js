@@ -12,6 +12,9 @@ router.use(compression());
 const BRANCH_FIELDS = "name address";
 
 const OBJECT_ID_RE = /^[a-f0-9]{24}$/i;
+const listCache = new Map(); // url -> { body, total, exp }
+const LIST_TTL = 10_000;
+export const invalidateProjectsCache = () => listCache.clear();
 
 const requireAdmin = (req, res, next) => {
   if (req.user?.role !== "admin") {
@@ -37,6 +40,7 @@ router.post("/", authMiddleware,requireAdmin, async (req, res) => {
       buildings: buildings || [],
     });
     await project.populate("branches", BRANCH_FIELDS);
+    invalidateProjectsCache();
     res.status(201).json(project);
   } catch (err) {
     res
@@ -49,8 +53,15 @@ router.post("/", authMiddleware,requireAdmin, async (req, res) => {
 //   GET /api/projects              -> full projects, same as before
 //   GET /api/projects?lite=true    -> same list without `buildings` (much faster)
 //   GET /api/projects?page=1&limit=20 -> optional pagination, total in X-Total-Count header
-router.get("/", authMiddleware, async (req, res) => {
+router.get("/",  authMiddleware, async (req, res) => {
   try {
+    const key = req.originalUrl;
+    const hit = listCache.get(key);
+    if (hit && hit.exp > Date.now()) {
+      if (hit.total != null) res.set("X-Total-Count", hit.total);
+      return res.json(hit.body);
+    }
+
     const { lite, page, limit } = req.query;
 
     let query = Project.find()
@@ -62,23 +73,27 @@ router.get("/", authMiddleware, async (req, res) => {
       query = query.select("-buildings");
     }
 
+    let total = null;
     if (limit) {
       const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
       const p = Math.max(parseInt(page, 10) || 1, 1);
       query = query.skip((p - 1) * l).limit(l);
-      res.set("X-Total-Count", String(await Project.countDocuments()));
+      total = String(await Project.countDocuments());
+      res.set("X-Total-Count", total);
     }
 
-    res.json(await query);
+    const body = await query;
+    if (listCache.size > 200) listCache.clear();
+    listCache.set(key, { body, total, exp: Date.now() + LIST_TTL });
+    res.json(body);
   } catch (err) {
     res
       .status(500)
       .json({ message: "Failed to fetch projects", error: err.message });
   }
 });
-
 // Update a project
-router.put("/:id", authMiddleware, async (req, res) => {
+router.put("/:id", authMiddleware, requireAdmin, async (req, res) => {
   if (!isValidObjectId(req.params.id)) {
     return res.status(400).json({ message: "Invalid project id" });
   }
@@ -100,6 +115,7 @@ router.put("/:id", authMiddleware, async (req, res) => {
 
     if (!project) return res.status(404).json({ message: "Project not found" });
     res.json(project);
+    invalidateProjectsCache();
   } catch (err) {
     res
       .status(400)
@@ -163,6 +179,7 @@ router.put("/:id/hierarchy", authMiddleware,requireAdmin, async (req, res) => {
       message: "Project hierarchy updated successfully",
       buildings: project.buildings,
     });
+    invalidateProjectsCache();
   } catch (err) {
     res.status(400).json({
       message: "Failed to update project hierarchy",
@@ -196,12 +213,14 @@ try {
       "The project's files could not be removed from storage. The project was not deleted. Please try again.",
     error: "Storage cleanup failed",
   });
+
 }
 
 try {
   await ProjectDocument.deleteMany({ projectId: id });
   await ProjectFolder.deleteMany({ projectId: id });
   await Project.findByIdAndDelete(id);
+  invalidateProjectsCache();
 
   return res.json({ message: "Project deleted successfully" });
   } catch (err) {
